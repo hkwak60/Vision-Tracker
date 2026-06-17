@@ -155,6 +155,23 @@ def run_tests() -> None:
         assert len(plc_rows) == 1
         assert plc_rows[0]["id"] == plc_id
 
+        bypass_id = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 12:00",
+                line="2-2",
+                instrument="Welding(-)",
+                worker="Yun Jihoon",
+                category="Recipe",
+                subcategory="Bypass/Unbypass",
+                title="Bypass setting check",
+                description="Bypass/Unbypass classification test.",
+            ),
+            db_path,
+        )
+        bypass_rows = search_issues({"category": "Recipe", "subcategory": "Bypass/Unbypass"}, db_path)
+        assert len(bypass_rows) == 1
+        assert bypass_rows[0]["id"] == bypass_id
+
 
 if __name__ == "__main__":
     run_tests()

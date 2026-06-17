@@ -11,7 +11,7 @@ Local Windows desktop issue tracker for mass-production vision inspection instru
 - Categories and subcategories:
   - Hardware: Camera, Lighting
   - Software: Program Crash, UI, PLC, Other
-  - Recipe: Overkill, Underkill
+  - Recipe: Overkill, Underkill, Add Measure, Bypass/Unbypass
   - Camera Grab Fail
   - Production
   - Other
