@@ -21,6 +21,7 @@ from vision_tracker import (
     dashboard_counts,
     delete_issue,
     export_issues_to_excel,
+    format_instruments,
     get_issue,
     initialize_database,
     issue_time_bounds,
@@ -28,6 +29,7 @@ from vision_tracker import (
     resolve_issue,
     search_issues,
     set_issue_status,
+    split_instruments,
     update_issue,
 )
 
@@ -83,6 +85,7 @@ TRANSLATIONS = {
         "Clear": "초기화",
         "Search": "검색",
         "Excel": "엑셀",
+        "Vision Filter": "비전 필터",
     }
 }
 
@@ -305,6 +308,7 @@ class VisionIssueApp(tk.Tk):
         self.resolved_time_var = tk.StringVar()
         self.line_var = tk.StringVar(value=LINES[0])
         self.instrument_var = tk.StringVar(value=INSTRUMENTS[0])
+        self.selected_instruments = {INSTRUMENTS[0]}
         self.category_var = tk.StringVar(value=CATEGORIES[0])
         self.subcategory_var = tk.StringVar(value=CATEGORY_MAP[CATEGORIES[0]][0])
         self.status_var = tk.StringVar(value=STATUS_OPTIONS[0])
@@ -371,7 +375,11 @@ class VisionIssueApp(tk.Tk):
         self.line_var.set(line)
 
     def select_instrument(self, instrument: str) -> None:
-        self.instrument_var.set(instrument)
+        if instrument in self.selected_instruments and len(self.selected_instruments) > 1:
+            self.selected_instruments.remove(instrument)
+        else:
+            self.selected_instruments.add(instrument)
+        self.instrument_var.set(format_instruments(self.selected_instruments))
 
     def refresh_line_instrument_buttons(self) -> None:
         selected_bg = "#1f6feb"
@@ -385,8 +393,51 @@ class VisionIssueApp(tk.Tk):
                 foreground=selected_fg if is_selected else default_fg,
                 relief="sunken" if is_selected else "raised",
             )
+        current_instruments = set(split_instruments(self.instrument_var.get()))
+        self.selected_instruments = current_instruments or {INSTRUMENTS[0]}
+        if not current_instruments:
+            self.instrument_var.set(format_instruments(self.selected_instruments))
+            return
         for instrument, button in getattr(self, "instrument_buttons", {}).items():
-            is_selected = instrument == self.instrument_var.get()
+            is_selected = instrument in current_instruments
+            button.configure(
+                background=selected_bg if is_selected else default_bg,
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
+
+    def add_filter_instrument_buttons(self, parent: ttk.Frame, row: int) -> None:
+        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame.grid(row=row, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        self.tr_label(frame, "Vision Filter", style="Panel.TLabel").pack(side="left", padx=(4, 8))
+        self.filter_instrument_buttons: dict[str, tk.Button] = {}
+        for instrument in INSTRUMENTS:
+            button = tk.Button(
+                frame,
+                text=instrument,
+                width=12,
+                relief="raised",
+                command=lambda selected_instrument=instrument: self.toggle_filter_instrument(selected_instrument),
+            )
+            button.pack(side="left", padx=(0, 4))
+            self.filter_instrument_buttons[instrument] = button
+
+    def toggle_filter_instrument(self, instrument: str) -> None:
+        if instrument in self.filter_instruments:
+            self.filter_instruments.remove(instrument)
+        else:
+            self.filter_instruments.add(instrument)
+        self.filter_instrument.set(format_instruments(self.filter_instruments))
+        self.refresh_filter_instrument_buttons()
+        self.search_records()
+
+    def refresh_filter_instrument_buttons(self) -> None:
+        selected_bg = "#1f6feb"
+        selected_fg = "#ffffff"
+        default_bg = self.cget("bg")
+        default_fg = "#111827"
+        for instrument, button in getattr(self, "filter_instrument_buttons", {}).items():
+            is_selected = instrument in self.filter_instruments
             button.configure(
                 background=selected_bg if is_selected else default_bg,
                 foreground=selected_fg if is_selected else default_fg,
@@ -400,6 +451,7 @@ class VisionIssueApp(tk.Tk):
         self.filter_status = tk.StringVar()
         self.filter_line = tk.StringVar()
         self.filter_instrument = tk.StringVar()
+        self.filter_instruments: set[str] = set()
         self.filter_category = tk.StringVar()
         self.filter_subcategory = tk.StringVar()
         self.filter_keyword = tk.StringVar()
@@ -409,7 +461,6 @@ class VisionIssueApp(tk.Tk):
 
         self.add_filter_combo(filters, "Status", self.filter_status, [""] + STATUS_OPTIONS, 0, 0)
         self.add_filter_combo(filters, "Line", self.filter_line, [""] + LINES, 0, 2)
-        self.add_filter_combo(filters, "Instrument", self.filter_instrument, [""] + INSTRUMENTS, 0, 4)
         category_filter = self.add_filter_combo(filters, "Category", self.filter_category, [""] + CATEGORIES, 1, 0)
         category_filter.bind("<<ComboboxSelected>>", lambda _event: self.update_filter_subcategories())
         self.filter_subcategory_combo = self.add_filter_combo(filters, "Subcategory", self.filter_subcategory, [""], 1, 2)
@@ -417,8 +468,10 @@ class VisionIssueApp(tk.Tk):
         self.add_filter_entry(filters, "From", self.filter_from, 2, 0)
         self.add_filter_entry(filters, "To", self.filter_to, 2, 2)
 
+        self.add_filter_instrument_buttons(filters, 3)
+
         quick_filters = ttk.Frame(filters, style="Panel.TFrame")
-        quick_filters.grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        quick_filters.grid(row=4, column=0, columnspan=6, sticky="w", pady=(8, 0))
         self.tr_button(quick_filters, "Today", lambda: self.apply_quick_filter("today")).pack(side="left", padx=(0, 6))
         self.tr_button(quick_filters, "This Week", lambda: self.apply_quick_filter("week")).pack(side="left", padx=(0, 6))
         self.tr_button(quick_filters, "Action Required", lambda: self.apply_quick_filter("action")).pack(side="left", padx=(0, 6))
@@ -462,7 +515,7 @@ class VisionIssueApp(tk.Tk):
             "id": 58,
             "issue_time": 140,
             "line": 72,
-            "instrument": 120,
+            "instrument": 190,
             "category": 110,
             "subcategory": 170,
             "title": 290,
@@ -633,6 +686,7 @@ class VisionIssueApp(tk.Tk):
         self.set_issue_datetime(now_text())
         self.resolved_time_var.set("")
         self.line_var.set(LINES[0])
+        self.selected_instruments = {INSTRUMENTS[0]}
         self.instrument_var.set(INSTRUMENTS[0])
         self.category_var.set(CATEGORIES[0])
         self.update_subcategories()
@@ -697,12 +751,14 @@ class VisionIssueApp(tk.Tk):
         for variable in [
             self.filter_status,
             self.filter_line,
-            self.filter_instrument,
             self.filter_category,
             self.filter_subcategory,
             self.filter_keyword,
         ]:
             variable.set("")
+        self.filter_instruments.clear()
+        self.filter_instrument.set("")
+        self.refresh_filter_instrument_buttons()
         self.reset_search_date_bounds()
         self.update_filter_subcategories()
         self.search_records()

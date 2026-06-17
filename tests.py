@@ -172,6 +172,26 @@ def run_tests() -> None:
         assert len(bypass_rows) == 1
         assert bypass_rows[0]["id"] == bypass_id
 
+        multi_id = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 13:00",
+                line="1-1",
+                instrument="Welding(+) / Welding(-)",
+                worker="Yun Jihoon",
+                category="Recipe",
+                subcategory="Add Measure",
+                title="Both welding visions updated",
+                description="Multiple vision selection test.",
+            ),
+            db_path,
+        )
+        plus_rows = search_issues({"instrument": "Welding(+)"}, db_path)
+        assert any(row["id"] == multi_id for row in plus_rows)
+        minus_rows = search_issues({"instrument": "Welding(-)"}, db_path)
+        assert any(row["id"] == multi_id for row in minus_rows)
+        multi_filter_rows = search_issues({"instrument": "Lead / Welding(-)"}, db_path)
+        assert any(row["id"] == multi_id for row in multi_filter_rows)
+
 
 if __name__ == "__main__":
     run_tests()

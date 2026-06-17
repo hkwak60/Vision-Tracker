@@ -25,6 +25,7 @@ INSTRUMENTS = [
     "Welding(+)",
     "Welding(-)",
 ]
+INSTRUMENT_SEPARATOR = " / "
 WORKERS = ["Hojun Kwak", "Kijung Kim", "Jihoon Yun", "Jisub Yun"]
 ACTIVE_STATUS_OPTIONS = ["Action Required", "Monitoring"]
 STATUS_OPTIONS = ACTIVE_STATUS_OPTIONS + ["Resolved"]
@@ -37,6 +38,16 @@ CATEGORY_MAP = {
     "Other": [""],
 }
 CATEGORIES = list(CATEGORY_MAP.keys())
+
+
+def split_instruments(value: str) -> list[str]:
+    instruments = [item.strip() for item in value.split("/") if item.strip()]
+    return instruments
+
+
+def format_instruments(values: list[str] | tuple[str, ...] | set[str]) -> str:
+    ordered = [instrument for instrument in INSTRUMENTS if instrument in values]
+    return INSTRUMENT_SEPARATOR.join(ordered)
 
 
 @dataclass(frozen=True)
@@ -130,7 +141,11 @@ def validate_issue(issue: IssueInput) -> list[str]:
         errors.append("Issue time must use YYYY-MM-DD HH:MM format.")
     if issue.line not in LINES:
         errors.append("Line is not valid.")
-    if issue.instrument not in INSTRUMENTS:
+    issue_instruments = split_instruments(issue.instrument)
+    if not issue_instruments:
+        errors.append("Instrument is required.")
+    invalid_instruments = [instrument for instrument in issue_instruments if instrument not in INSTRUMENTS]
+    if invalid_instruments:
         errors.append("Instrument is not valid.")
     if issue.category not in CATEGORY_MAP:
         errors.append("Category is not valid.")
@@ -255,12 +270,29 @@ def build_search_query(filters: dict[str, str]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
 
-    exact_fields = ["status", "line", "instrument", "category", "subcategory", "worker"]
+    exact_fields = ["status", "line", "category", "subcategory", "worker"]
     for field in exact_fields:
         value = filters.get(field, "").strip()
         if value:
             clauses.append(f"{field} = ?")
             params.append(value)
+
+    selected_instruments = split_instruments(filters.get("instrument", "").strip())
+    if selected_instruments:
+        instrument_clauses: list[str] = []
+        for instrument in selected_instruments:
+            instrument_clauses.append(
+                "(instrument = ? OR instrument LIKE ? OR instrument LIKE ? OR instrument LIKE ?)"
+            )
+            params.extend(
+                [
+                    instrument,
+                    f"{instrument}{INSTRUMENT_SEPARATOR}%",
+                    f"%{INSTRUMENT_SEPARATOR}{instrument}{INSTRUMENT_SEPARATOR}%",
+                    f"%{INSTRUMENT_SEPARATOR}{instrument}",
+                ]
+            )
+        clauses.append(f"({' OR '.join(instrument_clauses)})")
 
     date_from = filters.get("date_from", "").strip()
     date_to = filters.get("date_to", "").strip()
