@@ -34,6 +34,7 @@ Local Windows desktop issue tracker for mass-production vision inspection instru
 - Search quick filters for common report views
 - Search and Excel rows are sorted by issue time with sequential report numbers
 - Header language selector for English and Korean UI labels
+- Search date range defaults to the first and latest issue times
 
 ## Run
 

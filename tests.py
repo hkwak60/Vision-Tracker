@@ -11,6 +11,7 @@ from vision_tracker import (
     delete_issue,
     export_issues_to_excel,
     initialize_database,
+    issue_time_bounds,
     resolve_issue,
     search_issues,
     set_issue_status,
@@ -133,6 +134,9 @@ def run_tests() -> None:
         )
         ordered = search_issues({}, db_path)
         assert ordered[0]["id"] == early_id
+        first_time, latest_time = issue_time_bounds(db_path)
+        assert first_time == "2026-06-17 07:30"
+        assert latest_time == "2026-06-17 09:00"
 
 
 if __name__ == "__main__":

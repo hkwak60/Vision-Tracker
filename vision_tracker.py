@@ -328,6 +328,21 @@ def dashboard_counts(db_path: Path = DB_PATH) -> dict[str, int]:
         return counts
 
 
+def issue_time_bounds(db_path: Path = DB_PATH) -> tuple[str, str]:
+    today = datetime.now().strftime("%Y-%m-%d")
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT MIN(issue_time) AS first_time,
+                   MAX(issue_time) AS latest_time
+            FROM issues
+            """
+        ).fetchone()
+        first_time = row["first_time"] if row and row["first_time"] else f"{today} 00:00"
+        latest_time = row["latest_time"] if row and row["latest_time"] else f"{today} 23:59"
+        return first_time, latest_time
+
+
 def search_issues(filters: dict[str, str] | None = None, db_path: Path = DB_PATH) -> list[sqlite3.Row]:
     filters = filters or {}
     query, params = build_search_query(filters)

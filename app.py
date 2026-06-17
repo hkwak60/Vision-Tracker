@@ -23,6 +23,7 @@ from vision_tracker import (
     export_issues_to_excel,
     get_issue,
     initialize_database,
+    issue_time_bounds,
     now_text,
     resolve_issue,
     search_issues,
@@ -37,9 +38,9 @@ STATUS_TAGS = {
     "Resolved": ("#ecfdf3", "#166534"),
 }
 
-LANGUAGES = ["English", "Korean"]
+LANGUAGES = ["English", "한국어"]
 TRANSLATIONS = {
-    "Korean": {
+    "한국어": {
         "Current Worker": "작업자",
         "Language": "언어",
         "Open Issues": "미해결 이슈",
@@ -96,7 +97,7 @@ class VisionIssueApp(tk.Tk):
         self.selected_issue_id: int | None = None
         self.loaded_issue_worker = ""
         self.search_rows = []
-        self.language_var = tk.StringVar(value=LANGUAGES[0])
+        self.language_var = tk.StringVar(value="한국어")
         self.translated_widgets: list[tuple[tk.Widget, str, str]] = []
 
         self.configure(bg="#f4f6f8")
@@ -404,6 +405,7 @@ class VisionIssueApp(tk.Tk):
         self.filter_keyword = tk.StringVar()
         self.filter_from = tk.StringVar()
         self.filter_to = tk.StringVar()
+        self.reset_search_date_bounds()
 
         self.add_filter_combo(filters, "Status", self.filter_status, [""] + STATUS_OPTIONS, 0, 0)
         self.add_filter_combo(filters, "Line", self.filter_line, [""] + LINES, 0, 2)
@@ -664,6 +666,11 @@ class VisionIssueApp(tk.Tk):
         self.search_rows = search_issues(filters)
         self.populate_tree(self.search_tree, self.search_rows)
 
+    def reset_search_date_bounds(self) -> None:
+        first_time, latest_time = issue_time_bounds()
+        self.filter_from.set(first_time)
+        self.filter_to.set(latest_time)
+
     def apply_quick_filter(self, filter_name: str) -> None:
         if filter_name == "today":
             today = datetime.now().strftime("%Y-%m-%d")
@@ -694,10 +701,9 @@ class VisionIssueApp(tk.Tk):
             self.filter_category,
             self.filter_subcategory,
             self.filter_keyword,
-            self.filter_from,
-            self.filter_to,
         ]:
             variable.set("")
+        self.reset_search_date_bounds()
         self.update_filter_subcategories()
         self.search_records()
 
