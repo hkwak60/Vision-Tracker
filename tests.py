@@ -6,6 +6,7 @@ from openpyxl import load_workbook
 from vision_tracker import (
     IssueInput,
     create_issue,
+    delete_issue,
     export_issues_to_excel,
     initialize_database,
     resolve_issue,
@@ -34,7 +35,7 @@ def run_tests() -> None:
         )
         assert issue_id == 1
 
-        rows = search_issues({"status": "Open", "category": "Hardware"}, db_path)
+        rows = search_issues({"status": "Action Required", "category": "Hardware"}, db_path)
         assert len(rows) == 1
         assert rows[0]["title"] == "Camera disconnect during inspection"
 
@@ -78,6 +79,7 @@ def run_tests() -> None:
                 subcategory="",
                 title="Grab timeout",
                 description="Camera failed to grab during cycle.",
+                status="Monitoring",
             ),
             db_path,
         )
@@ -85,6 +87,23 @@ def run_tests() -> None:
         grab_fail = search_issues({"category": "Camera Grab Fail"}, db_path)
         assert len(grab_fail) == 1
         assert grab_fail[0]["status"] == "Resolved"
+
+        issue_id_3 = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 10:00",
+                line="2-1",
+                instrument="Sealing",
+                worker="Jihoon Yun",
+                category="Recipe",
+                subcategory="Overkill",
+                title="Overkill trend",
+                description="Reject rate increased after recipe change.",
+            ),
+            db_path,
+        )
+        delete_issue(issue_id_3, db_path)
+        deleted = search_issues({"keyword": "Overkill trend"}, db_path)
+        assert len(deleted) == 0
 
 
 if __name__ == "__main__":

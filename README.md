@@ -11,10 +11,13 @@ Local Windows desktop issue tracker for mass-production vision inspection instru
 - Categories and subcategories:
   - Hardware: Camera, Lighting
   - Software: Program Crash
-  - Recipe: Overkill(False Reject), Underkill(False Accept)
+  - Recipe: Overkill, Underkill
   - Camera Grab Fail
   - Production
   - Other
+- Active statuses shown in Open Issues:
+  - Action Required
+  - Monitoring
 - Current worker profile selector:
   - Hojun Kwak
   - Kijung Kim

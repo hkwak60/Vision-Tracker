@@ -7,6 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from vision_tracker import (
+    ACTIVE_STATUS_OPTIONS,
     APP_TITLE,
     CATEGORIES,
     CATEGORY_MAP,
@@ -15,7 +16,9 @@ from vision_tracker import (
     STATUS_OPTIONS,
     WORKERS,
     IssueInput,
+    active_issues,
     create_issue,
+    delete_issue,
     export_issues_to_excel,
     get_issue,
     initialize_database,
@@ -96,6 +99,7 @@ class VisionIssueApp(tk.Tk):
         ttk.Button(toolbar, text="Refresh", command=self.refresh_open_issues).pack(side="left")
         ttk.Button(toolbar, text="Edit Selected", command=self.load_selected_open_issue).pack(side="left", padx=8)
         ttk.Button(toolbar, text="Resolve Selected", command=self.resolve_selected_open_issue).pack(side="left")
+        ttk.Button(toolbar, text="Delete Selected", command=lambda: self.delete_selected_issue(self.open_tree)).pack(side="left", padx=8)
 
         self.open_tree = self.make_issue_tree(self.open_tab)
         self.open_tree.pack(fill="both", expand=True)
@@ -143,6 +147,7 @@ class VisionIssueApp(tk.Tk):
         actions = ttk.Frame(panel, style="Panel.TFrame")
         actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(14, 0))
         ttk.Button(actions, text="New Blank Form", command=self.clear_form).pack(side="left")
+        ttk.Button(actions, text="Delete Issue", command=self.delete_loaded_issue).pack(side="left", padx=8)
         ttk.Button(actions, text="Save Issue", style="Accent.TButton", command=self.save_issue).pack(side="right")
 
     def build_search_tab(self) -> None:
@@ -172,6 +177,7 @@ class VisionIssueApp(tk.Tk):
         buttons.grid(row=2, column=4, columnspan=2, sticky="e", padx=6, pady=6)
         ttk.Button(buttons, text="Search", style="Accent.TButton", command=self.search_records).pack(side="left", padx=(0, 8))
         ttk.Button(buttons, text="Export Excel", command=self.export_search_results).pack(side="left")
+        ttk.Button(buttons, text="Delete Selected", command=lambda: self.delete_selected_issue(self.search_tree)).pack(side="left", padx=(8, 0))
 
         self.search_tree = self.make_issue_tree(self.search_tab)
         self.search_tree.pack(fill="both", expand=True)
@@ -217,18 +223,26 @@ class VisionIssueApp(tk.Tk):
         ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=column + 1, sticky="w", pady=7)
-        ttk.Entry(frame, textvariable=self.issue_date_var, width=12).pack(side="left")
-        ttk.Button(frame, text="Calendar", command=self.open_calendar_popup).pack(side="left", padx=(6, 10))
+        self.issue_date_entry = ttk.Entry(frame, textvariable=self.issue_date_var, width=12)
+        self.issue_date_entry.pack(side="left", padx=(0, 10))
+        self.issue_date_entry.bind("<Button-1>", self.open_calendar_popup)
+        self.issue_date_entry.bind("<FocusIn>", self.open_calendar_popup)
         tk.Spinbox(frame, from_=0, to=23, textvariable=self.issue_hour_var, width=3, wrap=True, format="%02.0f").pack(side="left")
         ttk.Label(frame, text=":", style="Panel.TLabel").pack(side="left", padx=3)
         tk.Spinbox(frame, from_=0, to=59, textvariable=self.issue_minute_var, width=3, wrap=True, format="%02.0f").pack(side="left")
 
-    def open_calendar_popup(self) -> None:
+    def open_calendar_popup(self, _event: tk.Event | None = None) -> None:
+        if hasattr(self, "calendar_popup") and self.calendar_popup.winfo_exists():
+            self.position_calendar_popup(self.calendar_popup)
+            return
         popup = tk.Toplevel(self)
+        self.calendar_popup = popup
         popup.title("Select Issue Date")
         popup.resizable(False, False)
         popup.transient(self)
-        popup.grab_set()
+        popup.overrideredirect(True)
+        popup.bind("<FocusOut>", lambda _event: popup.destroy())
+        self.position_calendar_popup(popup)
 
         selected = self.parse_issue_datetime()
         year_var = tk.IntVar(value=selected.year)
@@ -279,6 +293,12 @@ class VisionIssueApp(tk.Tk):
         ttk.Label(header, textvariable=title_var, width=18, anchor="center").pack(side="left", padx=6)
         ttk.Button(header, text=">", width=3, command=lambda: change_month(1)).pack(side="left")
         draw_calendar()
+
+    def position_calendar_popup(self, popup: tk.Toplevel) -> None:
+        self.issue_date_entry.update_idletasks()
+        x = self.issue_date_entry.winfo_rootx()
+        y = self.issue_date_entry.winfo_rooty() + self.issue_date_entry.winfo_height()
+        popup.geometry(f"+{x}+{y}")
 
     def add_labeled_combo(self, parent: ttk.Frame, label: str, variable: tk.StringVar, values: list[str], row: int, column: int) -> ttk.Combobox:
         ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
@@ -352,13 +372,13 @@ class VisionIssueApp(tk.Tk):
         self.instrument_var.set(INSTRUMENTS[0])
         self.category_var.set(CATEGORIES[0])
         self.update_subcategories()
-        self.status_var.set("Open")
+        self.status_var.set(ACTIVE_STATUS_OPTIONS[0])
         self.title_var.set("")
         self.description_text.delete("1.0", "end")
         self.resolution_text.delete("1.0", "end")
 
     def refresh_open_issues(self) -> None:
-        rows = search_issues({"status": "Open"})
+        rows = active_issues()
         self.populate_tree(self.open_tree, rows)
 
     def search_records(self) -> None:
@@ -481,6 +501,28 @@ class VisionIssueApp(tk.Tk):
             messagebox.showwarning(APP_TITLE, "Select an open issue first.")
             return
         resolve_issue(issue_id)
+        self.refresh_open_issues()
+        self.search_records()
+
+    def delete_loaded_issue(self) -> None:
+        if self.selected_issue_id is None:
+            messagebox.showwarning(APP_TITLE, "Load or select an issue first.")
+            return
+        self.delete_issue_by_id(self.selected_issue_id)
+
+    def delete_selected_issue(self, tree: ttk.Treeview) -> None:
+        issue_id = self.selected_tree_id(tree)
+        if issue_id is None:
+            messagebox.showwarning(APP_TITLE, "Select an issue first.")
+            return
+        self.delete_issue_by_id(issue_id)
+
+    def delete_issue_by_id(self, issue_id: int) -> None:
+        if not messagebox.askyesno(APP_TITLE, "Delete this issue log?"):
+            return
+        delete_issue(issue_id)
+        if self.selected_issue_id == issue_id:
+            self.clear_form()
         self.refresh_open_issues()
         self.search_records()
 

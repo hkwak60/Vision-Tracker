@@ -26,11 +26,12 @@ INSTRUMENTS = [
     "Welding(-)",
 ]
 WORKERS = ["Hojun Kwak", "Kijung Kim", "Jihoon Yun", "Jisub Yun"]
-STATUS_OPTIONS = ["Open", "In Progress", "Resolved"]
+ACTIVE_STATUS_OPTIONS = ["Action Required", "Monitoring"]
+STATUS_OPTIONS = ACTIVE_STATUS_OPTIONS + ["Resolved"]
 CATEGORY_MAP = {
     "Hardware": ["Camera", "Lighting"],
     "Software": ["Program Crash"],
-    "Recipe": ["Overkill(False Reject)", "Underkill(False Accept)"],
+    "Recipe": ["Overkill", "Underkill"],
     "Camera Grab Fail": [""],
     "Production": [""],
     "Other": [""],
@@ -48,7 +49,7 @@ class IssueInput:
     subcategory: str
     title: str
     description: str
-    status: str = "Open"
+    status: str = ACTIVE_STATUS_OPTIONS[0]
     resolved_time: str = ""
     resolution_notes: str = ""
 
@@ -102,6 +103,10 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
             ON issues(status, category, subcategory, line, instrument, issue_time)
             """
         )
+        conn.execute("UPDATE issues SET status = 'Action Required' WHERE status = 'Open'")
+        conn.execute("UPDATE issues SET status = 'Monitoring' WHERE status = 'In Progress'")
+        conn.execute("UPDATE issues SET subcategory = 'Overkill' WHERE subcategory = 'Overkill(False Reject)'")
+        conn.execute("UPDATE issues SET subcategory = 'Underkill' WHERE subcategory = 'Underkill(False Accept)'")
         conn.commit()
 
 
@@ -219,6 +224,12 @@ def resolve_issue(issue_id: int, notes: str = "", db_path: Path = DB_PATH) -> No
         conn.commit()
 
 
+def delete_issue(issue_id: int, db_path: Path = DB_PATH) -> None:
+    with closing(connect(db_path)) as conn:
+        conn.execute("DELETE FROM issues WHERE id = ?", (issue_id,))
+        conn.commit()
+
+
 def build_search_query(filters: dict[str, str]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -254,6 +265,22 @@ def build_search_query(filters: dict[str, str]) -> tuple[str, list[Any]]:
         ORDER BY issue_time DESC, id DESC
     """
     return query, params
+
+
+def active_issues(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
+    with closing(connect(db_path)) as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT id, issue_time, resolved_time, line, instrument, worker, category,
+                       subcategory, title, description, status, resolution_notes
+                FROM issues
+                WHERE status IN (?, ?)
+                ORDER BY issue_time DESC, id DESC
+                """,
+                tuple(ACTIVE_STATUS_OPTIONS),
+            )
+        )
 
 
 def search_issues(filters: dict[str, str] | None = None, db_path: Path = DB_PATH) -> list[sqlite3.Row]:
