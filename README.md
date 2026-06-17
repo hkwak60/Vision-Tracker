@@ -10,7 +10,7 @@ Local Windows desktop issue tracker for mass-production vision inspection instru
 - Instruments per line: `Pinhole`, `Pouch Align`, `Lead`, `Sealing`, `Lead Align`, `Welding(+)`, `Welding(-)`
 - Categories and subcategories:
   - Hardware: Camera, Lighting
-  - Software: Program Crash
+  - Software: Program Crash, UI, PLC, Other
   - Recipe: Overkill, Underkill
   - Camera Grab Fail
   - Production

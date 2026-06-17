@@ -30,7 +30,7 @@ ACTIVE_STATUS_OPTIONS = ["Action Required", "Monitoring"]
 STATUS_OPTIONS = ACTIVE_STATUS_OPTIONS + ["Resolved"]
 CATEGORY_MAP = {
     "Hardware": ["Camera", "Lighting"],
-    "Software": ["Program Crash"],
+    "Software": ["Program Crash", "UI", "PLC", "Other"],
     "Recipe": ["Overkill", "Underkill"],
     "Camera Grab Fail": [""],
     "Production": [""],

@@ -138,6 +138,23 @@ def run_tests() -> None:
         assert first_time == "2026-06-17 07:30"
         assert latest_time == "2026-06-17 09:00"
 
+        plc_id = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 11:00",
+                line="2-2",
+                instrument="Lead",
+                worker="Yun Jihoon",
+                category="Software",
+                subcategory="PLC",
+                title="PLC communication check",
+                description="PLC communication issue classification test.",
+            ),
+            db_path,
+        )
+        plc_rows = search_issues({"category": "Software", "subcategory": "PLC"}, db_path)
+        assert len(plc_rows) == 1
+        assert plc_rows[0]["id"] == plc_id
+
 
 if __name__ == "__main__":
     run_tests()
