@@ -37,6 +37,54 @@ STATUS_TAGS = {
     "Resolved": ("#ecfdf3", "#166534"),
 }
 
+LANGUAGES = ["English", "Korean"]
+TRANSLATIONS = {
+    "Korean": {
+        "Current Worker": "작업자",
+        "Language": "언어",
+        "Open Issues": "미해결 이슈",
+        "New / Edit Issue": "이슈 등록 / 수정",
+        "Search & Excel Report": "검색 및 엑셀 보고서",
+        "Action Required": "조치 필요",
+        "Monitoring": "모니터링",
+        "Resolved": "해결됨",
+        "Resolved Today": "오늘 해결",
+        "Active": "진행 중",
+        "Refresh": "새로고침",
+        "Edit": "수정",
+        "Delete": "삭제",
+        "Selected Issue": "선택된 이슈",
+        "Title": "제목",
+        "Status": "상태",
+        "Line / Instrument": "라인 / 비전",
+        "Category": "분류",
+        "Issue Time": "발생 시간",
+        "Logged By": "작성자",
+        "Downtime Duration": "다운타임",
+        "Description": "설명",
+        "Issue Record": "이슈 기록",
+        "Line": "라인",
+        "Vision": "비전",
+        "Subcategory": "세부 분류",
+        "Resolution Notes": "조치 내용",
+        "New": "새 기록",
+        "Save": "저장",
+        "ID": "번호",
+        "Instrument": "비전",
+        "Worker": "작업자",
+        "Keyword": "키워드",
+        "From": "시작",
+        "To": "종료",
+        "Today": "오늘",
+        "This Week": "이번 주",
+        "Camera Grab Fail": "카메라 Grab 실패",
+        "Recipe Issues": "레시피 이슈",
+        "Clear": "초기화",
+        "Search": "검색",
+        "Excel": "엑셀",
+    }
+}
+
 
 class VisionIssueApp(tk.Tk):
     def __init__(self) -> None:
@@ -48,6 +96,8 @@ class VisionIssueApp(tk.Tk):
         self.selected_issue_id: int | None = None
         self.loaded_issue_worker = ""
         self.search_rows = []
+        self.language_var = tk.StringVar(value=LANGUAGES[0])
+        self.translated_widgets: list[tuple[tk.Widget, str, str]] = []
 
         self.configure(bg="#f4f6f8")
         self.style = ttk.Style(self)
@@ -81,7 +131,17 @@ class VisionIssueApp(tk.Tk):
         ttk.Label(header, text=APP_TITLE, style="Header.TLabel").pack(side="left")
         profile = ttk.Frame(header)
         profile.pack(side="right")
-        ttk.Label(profile, text="Current Worker").pack(side="left", padx=(0, 8))
+        self.tr_label(profile, "Language").pack(side="left", padx=(0, 8))
+        language_combo = ttk.Combobox(
+            profile,
+            textvariable=self.language_var,
+            values=LANGUAGES,
+            state="readonly",
+            width=10,
+        )
+        language_combo.pack(side="left", padx=(0, 18))
+        language_combo.bind("<<ComboboxSelected>>", self.apply_language)
+        self.tr_label(profile, "Current Worker").pack(side="left", padx=(0, 8))
         self.current_worker_var = tk.StringVar(value=WORKERS[0])
         ttk.Combobox(
             profile,
@@ -104,6 +164,53 @@ class VisionIssueApp(tk.Tk):
         self.build_open_tab()
         self.build_entry_tab()
         self.build_search_tab()
+        self.apply_language()
+
+    def text(self, key: str) -> str:
+        return TRANSLATIONS.get(self.language_var.get(), {}).get(key, key)
+
+    def register_text(self, widget: tk.Widget, key: str, option: str = "text") -> tk.Widget:
+        self.translated_widgets.append((widget, key, option))
+        widget.configure(**{option: self.text(key)})
+        return widget
+
+    def tr_label(self, parent: tk.Widget, key: str, **kwargs) -> ttk.Label:
+        label = ttk.Label(parent, **kwargs)
+        return self.register_text(label, key)
+
+    def tr_button(self, parent: tk.Widget, key: str, command, prefix: str = "", **kwargs) -> ttk.Button:
+        button = ttk.Button(parent, command=command, **kwargs)
+        self.translated_widgets.append((button, key, "text"))
+        button.configure(text=f"{prefix}{self.text(key)}")
+        button.translation_prefix = prefix
+        return button
+
+    def apply_language(self, _event: tk.Event | None = None) -> None:
+        for widget, key, option in self.translated_widgets:
+            prefix = getattr(widget, "translation_prefix", "")
+            widget.configure(**{option: f"{prefix}{self.text(key)}"})
+        if hasattr(self, "notebook"):
+            self.notebook.tab(self.open_tab, text=self.text("Open Issues"))
+            self.notebook.tab(self.entry_tab, text=self.text("New / Edit Issue"))
+            self.notebook.tab(self.search_tab, text=self.text("Search & Excel Report"))
+        for tree_name in ["open_tree", "search_tree"]:
+            if hasattr(self, tree_name):
+                self.update_tree_headings(getattr(self, tree_name))
+
+    def update_tree_headings(self, tree: ttk.Treeview) -> None:
+        headings = {
+            "id": "ID",
+            "issue_time": "Issue Time",
+            "line": "Line",
+            "instrument": "Instrument",
+            "category": "Category",
+            "subcategory": "Subcategory",
+            "title": "Title",
+            "status": "Status",
+            "worker": "Logged By",
+        }
+        for column, key in headings.items():
+            tree.heading(column, text=self.text(key))
 
     def build_open_tab(self) -> None:
         self.dashboard_frame = ttk.Frame(self.open_tab)
@@ -114,12 +221,12 @@ class VisionIssueApp(tk.Tk):
 
         toolbar = ttk.Frame(self.open_tab)
         toolbar.pack(fill="x", pady=(0, 10))
-        ttk.Button(toolbar, text="↻ Refresh", command=self.refresh_open_issues).pack(side="left")
-        ttk.Button(toolbar, text="✎ Edit", command=self.load_selected_open_issue).pack(side="left", padx=8)
-        ttk.Button(toolbar, text="Action Required", command=lambda: self.quick_status_selected(self.open_tree, "Action Required")).pack(side="left")
-        ttk.Button(toolbar, text="Monitoring", command=lambda: self.quick_status_selected(self.open_tree, "Monitoring")).pack(side="left", padx=8)
-        ttk.Button(toolbar, text="✓ Resolved", command=self.resolve_selected_open_issue).pack(side="left")
-        ttk.Button(toolbar, text="✕ Delete", command=lambda: self.delete_selected_issue(self.open_tree)).pack(side="left", padx=8)
+        self.tr_button(toolbar, "Refresh", self.refresh_open_issues, prefix="↻ ").pack(side="left")
+        self.tr_button(toolbar, "Edit", self.load_selected_open_issue, prefix="✎ ").pack(side="left", padx=8)
+        self.tr_button(toolbar, "Action Required", lambda: self.quick_status_selected(self.open_tree, "Action Required")).pack(side="left")
+        self.tr_button(toolbar, "Monitoring", lambda: self.quick_status_selected(self.open_tree, "Monitoring")).pack(side="left", padx=8)
+        self.tr_button(toolbar, "Resolved", self.resolve_selected_open_issue, prefix="✓ ").pack(side="left")
+        self.tr_button(toolbar, "Delete", lambda: self.delete_selected_issue(self.open_tree), prefix="✕ ").pack(side="left", padx=8)
 
         content = ttk.Frame(self.open_tab)
         content.pack(fill="both", expand=True)
@@ -155,7 +262,7 @@ class VisionIssueApp(tk.Tk):
         detail_canvas.bind("<MouseWheel>", lambda event: detail_canvas.yview_scroll(int(-event.delta / 60), "units"))
 
         self.detail_frame.columnconfigure(0, weight=1)
-        ttk.Label(self.detail_frame, text="Selected Issue", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
+        self.tr_label(self.detail_frame, "Selected Issue", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
         self.detail_vars = {
             "Title": tk.StringVar(value="-"),
             "Status": tk.StringVar(value="-"),
@@ -166,10 +273,10 @@ class VisionIssueApp(tk.Tk):
             "Downtime Duration": tk.StringVar(value="-"),
         }
         for row_index, (label, variable) in enumerate(self.detail_vars.items(), start=1):
-            ttk.Label(self.detail_frame, text=label, style="Panel.TLabel").grid(row=row_index * 2 - 1, column=0, sticky="w", pady=(7, 0))
+            self.tr_label(self.detail_frame, label, style="Panel.TLabel").grid(row=row_index * 2 - 1, column=0, sticky="w", pady=(7, 0))
             ttk.Label(self.detail_frame, textvariable=variable, style="Panel.TLabel", wraplength=260).grid(row=row_index * 2, column=0, sticky="w")
 
-        ttk.Label(self.detail_frame, text="Description", style="Panel.TLabel").grid(row=16, column=0, sticky="w", pady=(14, 0))
+        self.tr_label(self.detail_frame, "Description", style="Panel.TLabel").grid(row=16, column=0, sticky="w", pady=(14, 0))
         self.detail_description = tk.Text(self.detail_frame, height=12, wrap="word", font=("Segoe UI", 9), state="disabled")
         self.detail_description.grid(row=17, column=0, sticky="nsew", pady=(3, 0))
         self.detail_description.bind("<MouseWheel>", lambda event: detail_canvas.yview_scroll(int(-event.delta / 60), "units"))
@@ -179,7 +286,7 @@ class VisionIssueApp(tk.Tk):
         card.pack(side="left", fill="x", expand=True, padx=(0, 10))
         value = tk.StringVar(value="0")
         self.dashboard_vars[title] = value
-        ttk.Label(card, text=title, style="CardTitle.TLabel").pack(anchor="w")
+        self.tr_label(card, title, style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(card, textvariable=value, style="CardValue.TLabel").pack(anchor="w", pady=(4, 0))
 
     def build_entry_tab(self) -> None:
@@ -189,7 +296,7 @@ class VisionIssueApp(tk.Tk):
         panel.columnconfigure(3, weight=1)
         panel.rowconfigure(8, weight=1)
 
-        ttk.Label(panel, text="Issue Record", style="Subheader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+        self.tr_label(panel, "Issue Record", style="Subheader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
 
         self.issue_date_var = tk.StringVar()
         self.issue_hour_var = tk.StringVar()
@@ -212,26 +319,26 @@ class VisionIssueApp(tk.Tk):
         self.add_labeled_entry(panel, "Downtime Duration", self.resolved_time_var, 4, 0)
         self.add_labeled_entry(panel, "Title", self.title_var, 5, 0, columnspan=3)
 
-        ttk.Label(panel, text="Description", style="Panel.TLabel").grid(row=6, column=0, sticky="nw", pady=7)
+        self.tr_label(panel, "Description", style="Panel.TLabel").grid(row=6, column=0, sticky="nw", pady=7)
         self.description_text = tk.Text(panel, height=7, wrap="word", font=("Segoe UI", 10))
         self.description_text.grid(row=6, column=1, columnspan=3, sticky="nsew", pady=7)
 
-        ttk.Label(panel, text="Resolution Notes", style="Panel.TLabel").grid(row=7, column=0, sticky="nw", pady=7)
+        self.tr_label(panel, "Resolution Notes", style="Panel.TLabel").grid(row=7, column=0, sticky="nw", pady=7)
         self.resolution_text = tk.Text(panel, height=5, wrap="word", font=("Segoe UI", 10))
         self.resolution_text.grid(row=7, column=1, columnspan=3, sticky="nsew", pady=7)
 
         actions = ttk.Frame(panel, style="Panel.TFrame")
         actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(14, 0))
-        ttk.Button(actions, text="+ New", command=self.clear_form).pack(side="left")
-        ttk.Button(actions, text="✕ Delete", command=self.delete_loaded_issue).pack(side="left", padx=8)
-        ttk.Button(actions, text="✓ Save", style="Accent.TButton", command=self.save_issue).pack(side="right")
+        self.tr_button(actions, "New", self.clear_form, prefix="+ ").pack(side="left")
+        self.tr_button(actions, "Delete", self.delete_loaded_issue, prefix="✕ ").pack(side="left", padx=8)
+        self.tr_button(actions, "Save", self.save_issue, prefix="✓ ", style="Accent.TButton").pack(side="right")
 
     def add_line_instrument_grid(self, parent: ttk.Frame, row: int) -> None:
         grid = ttk.Frame(parent, style="Panel.TFrame")
         grid.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 12))
         self.line_buttons: dict[str, tk.Button] = {}
         self.instrument_buttons: dict[str, tk.Button] = {}
-        ttk.Label(grid, text="Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.tr_label(grid, "Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
         for column_index, line in enumerate(LINES, start=1):
             button = tk.Button(
                 grid,
@@ -244,7 +351,7 @@ class VisionIssueApp(tk.Tk):
                 row=0, column=column_index, padx=2, pady=3
             )
             self.line_buttons[line] = button
-        ttk.Label(grid, text="Vision", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        self.tr_label(grid, "Vision", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
         for column_index, instrument in enumerate(INSTRUMENTS, start=1):
             button = tk.Button(
                 grid,
@@ -310,19 +417,19 @@ class VisionIssueApp(tk.Tk):
 
         quick_filters = ttk.Frame(filters, style="Panel.TFrame")
         quick_filters.grid(row=3, column=0, columnspan=6, sticky="w", pady=(8, 0))
-        ttk.Button(quick_filters, text="Today", command=lambda: self.apply_quick_filter("today")).pack(side="left", padx=(0, 6))
-        ttk.Button(quick_filters, text="This Week", command=lambda: self.apply_quick_filter("week")).pack(side="left", padx=(0, 6))
-        ttk.Button(quick_filters, text="Action Required", command=lambda: self.apply_quick_filter("action")).pack(side="left", padx=(0, 6))
-        ttk.Button(quick_filters, text="Monitoring", command=lambda: self.apply_quick_filter("monitoring")).pack(side="left", padx=(0, 6))
-        ttk.Button(quick_filters, text="Camera Grab Fail", command=lambda: self.apply_quick_filter("camera_grab")).pack(side="left", padx=(0, 6))
-        ttk.Button(quick_filters, text="Recipe Issues", command=lambda: self.apply_quick_filter("recipe")).pack(side="left", padx=(0, 6))
-        ttk.Button(quick_filters, text="Clear", command=self.clear_search_filters).pack(side="left")
+        self.tr_button(quick_filters, "Today", lambda: self.apply_quick_filter("today")).pack(side="left", padx=(0, 6))
+        self.tr_button(quick_filters, "This Week", lambda: self.apply_quick_filter("week")).pack(side="left", padx=(0, 6))
+        self.tr_button(quick_filters, "Action Required", lambda: self.apply_quick_filter("action")).pack(side="left", padx=(0, 6))
+        self.tr_button(quick_filters, "Monitoring", lambda: self.apply_quick_filter("monitoring")).pack(side="left", padx=(0, 6))
+        self.tr_button(quick_filters, "Camera Grab Fail", lambda: self.apply_quick_filter("camera_grab")).pack(side="left", padx=(0, 6))
+        self.tr_button(quick_filters, "Recipe Issues", lambda: self.apply_quick_filter("recipe")).pack(side="left", padx=(0, 6))
+        self.tr_button(quick_filters, "Clear", self.clear_search_filters).pack(side="left")
 
         buttons = ttk.Frame(filters, style="Panel.TFrame")
         buttons.grid(row=2, column=4, columnspan=2, sticky="e", padx=6, pady=6)
-        ttk.Button(buttons, text="⌕ Search", style="Accent.TButton", command=self.search_records).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="⇩ Excel", command=self.export_search_results).pack(side="left")
-        ttk.Button(buttons, text="✕ Delete", command=lambda: self.delete_selected_issue(self.search_tree)).pack(side="left", padx=(8, 0))
+        self.tr_button(buttons, "Search", self.search_records, prefix="⌕ ", style="Accent.TButton").pack(side="left", padx=(0, 8))
+        self.tr_button(buttons, "Excel", self.export_search_results, prefix="⇩ ").pack(side="left")
+        self.tr_button(buttons, "Delete", lambda: self.delete_selected_issue(self.search_tree), prefix="✕ ").pack(side="left", padx=(8, 0))
 
         search_table = ttk.Frame(self.search_tab)
         search_table.pack(fill="both", expand=True)
@@ -361,7 +468,7 @@ class VisionIssueApp(tk.Tk):
             "worker": 130,
         }
         for column in columns:
-            tree.heading(column, text=headings[column])
+            tree.heading(column, text=self.text(headings[column]))
             tree.column(column, width=widths[column], anchor="w")
         for status, (background, foreground) in STATUS_TAGS.items():
             tree.tag_configure(status, background=background, foreground=foreground)
@@ -369,13 +476,13 @@ class VisionIssueApp(tk.Tk):
         return tree
 
     def add_labeled_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, column: int, columnspan: int = 1) -> ttk.Entry:
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
+        self.tr_label(parent, label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
         entry = ttk.Entry(parent, textvariable=variable)
         entry.grid(row=row, column=column + 1, columnspan=columnspan, sticky="ew", pady=7)
         return entry
 
     def add_datetime_picker(self, parent: ttk.Frame, label: str, row: int, column: int) -> None:
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
+        self.tr_label(parent, label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=column + 1, sticky="w", pady=7)
         self.issue_date_entry = ttk.Entry(frame, textvariable=self.issue_date_var, width=12)
@@ -456,19 +563,19 @@ class VisionIssueApp(tk.Tk):
         popup.geometry(f"+{x}+{y}")
 
     def add_labeled_combo(self, parent: ttk.Frame, label: str, variable: tk.StringVar, values: list[str], row: int, column: int) -> ttk.Combobox:
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
+        self.tr_label(parent, label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
         combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly")
         combo.grid(row=row, column=column + 1, sticky="ew", pady=7)
         return combo
 
     def add_filter_combo(self, parent: ttk.Frame, label: str, variable: tk.StringVar, values: list[str], row: int, column: int) -> ttk.Combobox:
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(4, 8), pady=6)
+        self.tr_label(parent, label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(4, 8), pady=6)
         combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=20)
         combo.grid(row=row, column=column + 1, sticky="ew", padx=(0, 12), pady=6)
         return combo
 
     def add_filter_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, column: int) -> ttk.Entry:
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(4, 8), pady=6)
+        self.tr_label(parent, label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(4, 8), pady=6)
         entry = ttk.Entry(parent, textvariable=variable, width=22)
         entry.grid(row=row, column=column + 1, sticky="ew", padx=(0, 12), pady=6)
         return entry
