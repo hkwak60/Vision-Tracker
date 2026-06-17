@@ -73,6 +73,7 @@ def run_tests() -> None:
         workbook = load_workbook(export_path)
         sheet = workbook.active
         assert sheet["B2"].value == "2026-06-17 08:10"
+        assert sheet["A2"].value == 1
         assert sheet["I2"].value == "Camera disconnect during inspection"
         assert sheet["C1"].value == "Downtime Duration"
         assert sheet["F1"].value == "Logged By"
@@ -116,6 +117,22 @@ def run_tests() -> None:
         delete_issue(issue_id_3, db_path)
         deleted = search_issues({"keyword": "Overkill trend"}, db_path)
         assert len(deleted) == 0
+
+        early_id = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 07:30",
+                line="2-2",
+                instrument="Welding(+)",
+                worker="Jisub Yun",
+                category="Production",
+                subcategory="",
+                title="Early production note",
+                description="Created after later records but should sort first by issue time.",
+            ),
+            db_path,
+        )
+        ordered = search_issues({}, db_path)
+        assert ordered[0]["id"] == early_id
 
 
 if __name__ == "__main__":

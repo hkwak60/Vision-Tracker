@@ -283,7 +283,7 @@ def build_search_query(filters: dict[str, str]) -> tuple[str, list[Any]]:
                subcategory, title, description, status, resolution_notes
         FROM issues
         {where}
-        ORDER BY issue_time DESC, id DESC
+        ORDER BY issue_time ASC, id ASC
     """
     return query, params
 
@@ -297,7 +297,7 @@ def active_issues(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
                        subcategory, title, description, status, resolution_notes
                 FROM issues
                 WHERE status IN (?, ?)
-                ORDER BY issue_time DESC, id DESC
+                ORDER BY issue_time ASC, id ASC
                 """,
                 tuple(ACTIVE_STATUS_OPTIONS),
             )
@@ -366,8 +366,8 @@ def export_issues_to_excel(rows: list[sqlite3.Row], output_path: Path) -> None:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
 
-    for row in rows:
-        sheet.append([row[header_key(header)] for header in headers])
+    for row_number, row in enumerate(rows, start=1):
+        sheet.append([row_number if header == "ID" else row[header_key(header)] for header in headers])
 
     for column_index, header in enumerate(headers, start=1):
         max_length = len(header)

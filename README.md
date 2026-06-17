@@ -28,9 +28,11 @@ Local Windows desktop issue tracker for mass-production vision inspection instru
 - Search and Excel export
 - Dashboard summary cards for active issue counts
 - Visual line/instrument selector with dedicated line buttons and vision-type buttons
+- Selected line and vision buttons remain highlighted
 - Selected-issue detail panel with quick status actions
 - Scrollable selected-issue detail panel and issue tables
 - Search quick filters for common report views
+- Search and Excel rows are sorted by issue time with sequential report numbers
 
 ## Run
 

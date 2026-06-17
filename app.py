@@ -205,25 +205,23 @@ class VisionIssueApp(tk.Tk):
 
         self.add_line_instrument_grid(panel, 1)
         self.add_datetime_picker(panel, "Issue Time", 2, 0)
-        self.add_labeled_combo(panel, "Line", self.line_var, LINES, 2, 2)
-        self.add_labeled_combo(panel, "Instrument", self.instrument_var, INSTRUMENTS, 3, 0)
-        category_combo = self.add_labeled_combo(panel, "Category", self.category_var, CATEGORIES, 3, 2)
+        category_combo = self.add_labeled_combo(panel, "Category", self.category_var, CATEGORIES, 2, 2)
         category_combo.bind("<<ComboboxSelected>>", lambda _event: self.update_subcategories())
-        self.subcategory_combo = self.add_labeled_combo(panel, "Subcategory", self.subcategory_var, CATEGORY_MAP[self.category_var.get()], 4, 0)
-        self.add_labeled_combo(panel, "Status", self.status_var, STATUS_OPTIONS, 4, 2)
-        self.add_labeled_entry(panel, "Downtime Duration", self.resolved_time_var, 5, 0)
-        self.add_labeled_entry(panel, "Title", self.title_var, 6, 0, columnspan=3)
+        self.subcategory_combo = self.add_labeled_combo(panel, "Subcategory", self.subcategory_var, CATEGORY_MAP[self.category_var.get()], 3, 0)
+        self.add_labeled_combo(panel, "Status", self.status_var, STATUS_OPTIONS, 3, 2)
+        self.add_labeled_entry(panel, "Downtime Duration", self.resolved_time_var, 4, 0)
+        self.add_labeled_entry(panel, "Title", self.title_var, 5, 0, columnspan=3)
 
-        ttk.Label(panel, text="Description", style="Panel.TLabel").grid(row=7, column=0, sticky="nw", pady=7)
+        ttk.Label(panel, text="Description", style="Panel.TLabel").grid(row=6, column=0, sticky="nw", pady=7)
         self.description_text = tk.Text(panel, height=7, wrap="word", font=("Segoe UI", 10))
-        self.description_text.grid(row=7, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.description_text.grid(row=6, column=1, columnspan=3, sticky="nsew", pady=7)
 
-        ttk.Label(panel, text="Resolution Notes", style="Panel.TLabel").grid(row=8, column=0, sticky="nw", pady=7)
+        ttk.Label(panel, text="Resolution Notes", style="Panel.TLabel").grid(row=7, column=0, sticky="nw", pady=7)
         self.resolution_text = tk.Text(panel, height=5, wrap="word", font=("Segoe UI", 10))
-        self.resolution_text.grid(row=8, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.resolution_text.grid(row=7, column=1, columnspan=3, sticky="nsew", pady=7)
 
         actions = ttk.Frame(panel, style="Panel.TFrame")
-        actions.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(14, 0))
+        actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(14, 0))
         ttk.Button(actions, text="+ New", command=self.clear_form).pack(side="left")
         ttk.Button(actions, text="✕ Delete", command=self.delete_loaded_issue).pack(side="left", padx=8)
         ttk.Button(actions, text="✓ Save", style="Accent.TButton", command=self.save_issue).pack(side="right")
@@ -231,23 +229,61 @@ class VisionIssueApp(tk.Tk):
     def add_line_instrument_grid(self, parent: ttk.Frame, row: int) -> None:
         grid = ttk.Frame(parent, style="Panel.TFrame")
         grid.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+        self.line_buttons: dict[str, tk.Button] = {}
+        self.instrument_buttons: dict[str, tk.Button] = {}
         ttk.Label(grid, text="Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
         for column_index, line in enumerate(LINES, start=1):
-            ttk.Button(grid, text=line, width=10, command=lambda selected_line=line: self.line_var.set(selected_line)).grid(
+            button = tk.Button(
+                grid,
+                text=line,
+                width=10,
+                relief="raised",
+                command=lambda selected_line=line: self.select_line(selected_line),
+            )
+            button.grid(
                 row=0, column=column_index, padx=2, pady=3
             )
+            self.line_buttons[line] = button
         ttk.Label(grid, text="Vision", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
         for column_index, instrument in enumerate(INSTRUMENTS, start=1):
-            ttk.Button(
+            button = tk.Button(
                 grid,
                 text=instrument,
                 width=14,
-                command=lambda selected_instrument=instrument: self.instrument_var.set(selected_instrument),
-            ).grid(row=1, column=column_index, padx=2, pady=3)
+                relief="raised",
+                command=lambda selected_instrument=instrument: self.select_instrument(selected_instrument),
+            )
+            button.grid(row=1, column=column_index, padx=2, pady=3)
+            self.instrument_buttons[instrument] = button
+        self.line_var.trace_add("write", lambda *_args: self.refresh_line_instrument_buttons())
+        self.instrument_var.trace_add("write", lambda *_args: self.refresh_line_instrument_buttons())
+        self.refresh_line_instrument_buttons()
 
-    def select_line_instrument(self, line: str, instrument: str) -> None:
+    def select_line(self, line: str) -> None:
         self.line_var.set(line)
+
+    def select_instrument(self, instrument: str) -> None:
         self.instrument_var.set(instrument)
+
+    def refresh_line_instrument_buttons(self) -> None:
+        selected_bg = "#1f6feb"
+        selected_fg = "#ffffff"
+        default_bg = self.cget("bg")
+        default_fg = "#111827"
+        for line, button in getattr(self, "line_buttons", {}).items():
+            is_selected = line == self.line_var.get()
+            button.configure(
+                background=selected_bg if is_selected else default_bg,
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
+        for instrument, button in getattr(self, "instrument_buttons", {}).items():
+            is_selected = instrument == self.instrument_var.get()
+            button.configure(
+                background=selected_bg if is_selected else default_bg,
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
 
     def build_search_tab(self) -> None:
         filters = ttk.Frame(self.search_tab, style="Panel.TFrame", padding=14)
@@ -561,12 +597,13 @@ class VisionIssueApp(tk.Tk):
     def populate_tree(self, tree: ttk.Treeview, rows: list) -> None:
         for item in tree.get_children():
             tree.delete(item)
-        for row in rows:
+        for row_number, row in enumerate(rows, start=1):
             tree.insert(
                 "",
                 "end",
+                iid=str(row["id"]),
                 values=(
-                    row["id"],
+                    row_number,
                     row["issue_time"],
                     row["line"],
                     row["instrument"],
@@ -583,8 +620,7 @@ class VisionIssueApp(tk.Tk):
         selection = tree.selection()
         if not selection:
             return None
-        values = tree.item(selection[0], "values")
-        return int(values[0])
+        return int(selection[0])
 
     def load_selected_open_issue(self) -> None:
         issue_id = self.selected_tree_id(self.open_tree)
@@ -652,8 +688,7 @@ class VisionIssueApp(tk.Tk):
 
     def select_issue_in_tree(self, tree: ttk.Treeview, issue_id: int) -> None:
         for item in tree.get_children():
-            values = tree.item(item, "values")
-            if values and int(values[0]) == issue_id:
+            if int(item) == issue_id:
                 tree.selection_set(item)
                 tree.focus(item)
                 tree.see(item)
