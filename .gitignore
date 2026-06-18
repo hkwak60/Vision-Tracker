@@ -6,6 +6,8 @@ data/
 exports/
 dist/
 build/
+release/
+build_release/
 *.spec
 
 .venv/

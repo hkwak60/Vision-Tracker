@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,7 +14,8 @@ from openpyxl.utils import get_column_letter
 
 
 APP_TITLE = "Vision Issue Tracker"
-DB_PATH = Path("data") / "vision_issues.db"
+APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd()
+DB_PATH = APP_DIR / "data" / "vision_issues.db"
 
 LINES = ["1-1", "1-2", "2-1", "2-2"]
 INSTRUMENTS = [

@@ -763,8 +763,7 @@ class VisionIssueApp(tk.Tk):
             f"Group: {row['group_name']}\n"
             f"SW Version: {row['sw_version']}\n"
             f"Algo Version: {row['algo_version']}\n"
-            f"Updated: {row['updated_at']}\n"
-            f"Worker: {row['worker']}\n\n"
+            "\n"
             f"{description}"
         )
         self.set_version_description_text(text)
