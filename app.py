@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import calendar
-import tkinter as tk
+import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+
+if getattr(sys, "frozen", False):
+    tcl_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tcl"
+    os.environ.setdefault("TCL_LIBRARY", str(tcl_root / "tcl8.6"))
+    os.environ.setdefault("TK_LIBRARY", str(tcl_root / "tk8.6"))
+
+import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from vision_tracker import (
@@ -227,8 +236,6 @@ class VisionIssueApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 10))
         self.tr_button(toolbar, "Refresh", self.refresh_open_issues, prefix="↻ ").pack(side="left")
         self.tr_button(toolbar, "Edit", self.load_selected_open_issue, prefix="✎ ").pack(side="left", padx=8)
-        self.tr_button(toolbar, "Action Required", lambda: self.quick_status_selected(self.open_tree, "Action Required")).pack(side="left")
-        self.tr_button(toolbar, "Monitoring", lambda: self.quick_status_selected(self.open_tree, "Monitoring")).pack(side="left", padx=8)
         self.tr_button(toolbar, "Resolved", self.resolve_selected_open_issue, prefix="✓ ").pack(side="left")
         self.tr_button(toolbar, "Delete", lambda: self.delete_selected_issue(self.open_tree), prefix="✕ ").pack(side="left", padx=8)
 
@@ -305,7 +312,7 @@ class VisionIssueApp(tk.Tk):
         self.issue_date_var = tk.StringVar()
         self.issue_hour_var = tk.StringVar()
         self.issue_minute_var = tk.StringVar()
-        self.resolved_time_var = tk.StringVar()
+        self.resolved_time_var = tk.StringVar(value="00:00")
         self.line_var = tk.StringVar(value=LINES[0])
         self.instrument_var = tk.StringVar(value=INSTRUMENTS[0])
         self.selected_instruments = {INSTRUMENTS[0]}
@@ -543,7 +550,6 @@ class VisionIssueApp(tk.Tk):
         self.issue_date_entry = ttk.Entry(frame, textvariable=self.issue_date_var, width=12)
         self.issue_date_entry.pack(side="left", padx=(0, 10))
         self.issue_date_entry.bind("<Button-1>", self.open_calendar_popup)
-        self.issue_date_entry.bind("<FocusIn>", self.open_calendar_popup)
         tk.Spinbox(frame, from_=0, to=23, textvariable=self.issue_hour_var, width=3, wrap=True, format="%02.0f").pack(side="left")
         ttk.Label(frame, text=":", style="Panel.TLabel").pack(side="left", padx=3)
         tk.Spinbox(frame, from_=0, to=59, textvariable=self.issue_minute_var, width=3, wrap=True, format="%02.0f").pack(side="left")
@@ -559,7 +565,6 @@ class VisionIssueApp(tk.Tk):
         popup.transient(self)
         popup.overrideredirect(True)
         popup.bind("<FocusOut>", lambda _event: popup.destroy())
-        self.position_calendar_popup(popup)
 
         selected = self.parse_issue_datetime()
         year_var = tk.IntVar(value=selected.year)
@@ -610,11 +615,22 @@ class VisionIssueApp(tk.Tk):
         ttk.Label(header, textvariable=title_var, width=18, anchor="center").pack(side="left", padx=6)
         ttk.Button(header, text=">", width=3, command=lambda: change_month(1)).pack(side="left")
         draw_calendar()
+        popup.update_idletasks()
+        self.position_calendar_popup(popup)
+        popup.lift()
+        popup.focus_force()
 
     def position_calendar_popup(self, popup: tk.Toplevel) -> None:
         self.issue_date_entry.update_idletasks()
         x = self.issue_date_entry.winfo_rootx()
         y = self.issue_date_entry.winfo_rooty() + self.issue_date_entry.winfo_height()
+        popup_width = max(popup.winfo_reqwidth(), 220)
+        popup_height = max(popup.winfo_reqheight(), 180)
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        x = max(0, min(x, screen_width - popup_width - 8))
+        if y + popup_height > screen_height:
+            y = max(0, self.issue_date_entry.winfo_rooty() - popup_height)
         popup.geometry(f"+{x}+{y}")
 
     def add_labeled_combo(self, parent: ttk.Frame, label: str, variable: tk.StringVar, values: list[str], row: int, column: int) -> ttk.Combobox:
@@ -650,7 +666,7 @@ class VisionIssueApp(tk.Tk):
         worker = self.loaded_issue_worker or self.current_worker_var.get().strip()
         return IssueInput(
             issue_time=self.issue_datetime_text(),
-            resolved_time=self.resolved_time_var.get().strip(),
+            resolved_time=self.resolved_time_var.get().strip() or "00:00",
             line=self.line_var.get().strip(),
             instrument=self.instrument_var.get().strip(),
             worker=worker,
@@ -684,7 +700,7 @@ class VisionIssueApp(tk.Tk):
         self.selected_issue_id = None
         self.loaded_issue_worker = ""
         self.set_issue_datetime(now_text())
-        self.resolved_time_var.set("")
+        self.resolved_time_var.set("00:00")
         self.line_var.set(LINES[0])
         self.selected_instruments = {INSTRUMENTS[0]}
         self.instrument_var.set(INSTRUMENTS[0])
@@ -929,7 +945,12 @@ class VisionIssueApp(tk.Tk):
         self.delete_issue_by_id(issue_id)
 
     def delete_issue_by_id(self, issue_id: int) -> None:
-        if not messagebox.askyesno(APP_TITLE, "Delete this issue log?"):
+        row = get_issue(issue_id)
+        title = row["title"] if row else "selected issue"
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"정말 삭제하시겠습니까?\n\n{title}\n\n삭제 후 되돌릴 수 없습니다.",
+        ):
             return
         delete_issue(issue_id)
         if self.selected_issue_id == issue_id:
