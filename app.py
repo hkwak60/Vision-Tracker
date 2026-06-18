@@ -34,6 +34,7 @@ from vision_tracker import (
     dashboard_counts,
     delete_issue,
     export_issues_to_excel,
+    export_version_dashboard_to_excel,
     format_instruments,
     get_issue,
     initialize_database,
@@ -102,6 +103,7 @@ TRANSLATIONS = {
         "Clear": "초기화",
         "Search": "검색",
         "Excel": "엑셀",
+        "Export Dashboard": "대시보드 추출",
         "Vision Filter": "비전 필터",
         "Version Dashboard": "버전 대시보드",
         "Version Update": "버전 업데이트",
@@ -542,7 +544,10 @@ class VisionIssueApp(tk.Tk):
 
         dashboard_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
         dashboard_panel.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        self.tr_label(dashboard_panel, "Version Dashboard", style="Subheader.TLabel").pack(anchor="w", pady=(0, 8))
+        dashboard_header = ttk.Frame(dashboard_panel, style="Panel.TFrame")
+        dashboard_header.pack(fill="x", pady=(0, 8))
+        self.tr_label(dashboard_header, "Version Dashboard", style="Subheader.TLabel").pack(side="left")
+        self.tr_button(dashboard_header, "Export Dashboard", self.export_version_dashboard, prefix="⇩ ").pack(side="right")
         self.version_dashboard = ttk.Frame(dashboard_panel, style="Panel.TFrame")
         self.version_dashboard.pack(fill="x")
         self.version_cards: dict[tuple[str, str], tk.Label] = {}
@@ -640,8 +645,20 @@ class VisionIssueApp(tk.Tk):
         self.tr_button(actions, "Refresh", self.refresh_version_history, prefix="↻ ").pack(side="left")
         self.tr_button(actions, "Save Version Update", self.save_version_updates, prefix="✓ ", style="Accent.TButton").pack(side="right")
 
-        description_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
-        description_panel.grid(row=1, column=1, sticky="nsew")
+        description_container = ttk.Frame(content, style="Panel.TFrame")
+        description_container.grid(row=1, column=1, sticky="nsew")
+        description_container.columnconfigure(0, weight=1)
+        description_container.rowconfigure(0, weight=1)
+        description_canvas = tk.Canvas(description_container, background="#ffffff", highlightthickness=0)
+        description_canvas.grid(row=0, column=0, sticky="nsew")
+        description_panel_scroll = ttk.Scrollbar(description_container, orient="vertical", command=description_canvas.yview)
+        description_panel_scroll.grid(row=0, column=1, sticky="ns")
+        description_canvas.configure(yscrollcommand=description_panel_scroll.set)
+        description_panel = ttk.Frame(description_canvas, style="Panel.TFrame", padding=12)
+        description_window = description_canvas.create_window((0, 0), window=description_panel, anchor="nw")
+        description_panel.bind("<Configure>", lambda _event: description_canvas.configure(scrollregion=description_canvas.bbox("all")))
+        description_canvas.bind("<Configure>", lambda event: description_canvas.itemconfigure(description_window, width=event.width))
+        description_canvas.bind("<MouseWheel>", lambda event: description_canvas.yview_scroll(int(-event.delta / 60), "units"))
         description_panel.columnconfigure(0, weight=1)
         description_panel.rowconfigure(2, weight=1)
         description_panel.rowconfigure(4, weight=2)
@@ -666,15 +683,9 @@ class VisionIssueApp(tk.Tk):
         self.version_description_list.grid(row=2, column=0, sticky="nsew")
         self.version_description_list.bind("<<ListboxSelect>>", lambda _event: self.show_selected_version_description())
         self.tr_label(description_panel, "Description", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 2))
-        description_text_frame = ttk.Frame(description_panel, style="Panel.TFrame")
-        description_text_frame.grid(row=4, column=0, sticky="nsew")
-        description_text_frame.columnconfigure(0, weight=1)
-        description_text_frame.rowconfigure(0, weight=1)
-        self.version_description_view = tk.Text(description_text_frame, height=9, wrap="word", font=("Segoe UI", 9), state="disabled")
-        self.version_description_view.grid(row=0, column=0, sticky="nsew")
-        version_description_scroll = ttk.Scrollbar(description_text_frame, orient="vertical", command=self.version_description_view.yview)
-        version_description_scroll.grid(row=0, column=1, sticky="ns")
-        self.version_description_view.configure(yscrollcommand=version_description_scroll.set)
+        self.version_description_view = tk.Text(description_panel, height=9, wrap="word", font=("Segoe UI", 9), state="disabled")
+        self.version_description_view.grid(row=4, column=0, sticky="nsew")
+        self.version_description_view.bind("<MouseWheel>", lambda event: description_canvas.yview_scroll(int(-event.delta / 60), "units"))
 
         self.on_version_group_changed()
         self.refresh_version_history()
@@ -857,6 +868,19 @@ class VisionIssueApp(tk.Tk):
         self.populate_version_dashboard()
         self.refresh_version_templates()
         self.populate_version_description_dashboard()
+
+    def export_version_dashboard(self) -> None:
+        default_name = f"vision_version_dashboard_{now_text().replace(':', '').replace(' ', '_')}.xlsx"
+        output = filedialog.asksaveasfilename(
+            title="Save Version Dashboard",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel Workbook", "*.xlsx")],
+        )
+        if not output:
+            return
+        export_version_dashboard_to_excel(Path(output))
+        messagebox.showinfo(APP_TITLE, f"Version dashboard saved:\n{output}")
 
     def populate_version_dashboard(self) -> None:
         latest = latest_version_by_instrument()

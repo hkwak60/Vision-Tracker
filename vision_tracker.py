@@ -457,6 +457,55 @@ def version_history_rows(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
         )
 
 
+def export_version_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    latest = latest_version_by_instrument(db_path)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Version Dashboard"
+
+    headers = [
+        "Line",
+        "Vision",
+        "Group",
+        "SW Version",
+        "Algo Version",
+        "Last Updated",
+        "Logged By",
+        "Description",
+    ]
+    sheet.append(headers)
+
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+
+    for line in LINES:
+        for instrument in INSTRUMENTS:
+            row = latest.get((line, instrument))
+            sheet.append(
+                [
+                    line,
+                    instrument,
+                    INSTRUMENT_GROUP[instrument],
+                    row["sw_version"] if row else "",
+                    row["algo_version"] if row else "",
+                    row["update_time"] if row else "",
+                    row["worker"] if row else "",
+                    row["description"] if row else "",
+                ]
+            )
+
+    for column_index, header in enumerate(headers, start=1):
+        max_length = len(header)
+        for cell in sheet[get_column_letter(column_index)]:
+            max_length = max(max_length, len(str(cell.value or "")))
+        sheet.column_dimensions[get_column_letter(column_index)].width = min(max_length + 2, 64)
+
+    sheet.freeze_panes = "A2"
+    workbook.save(output_path)
+
+
 def create_version_update(
     version: VersionInput,
     create_program_update_issue: bool = True,

@@ -12,6 +12,7 @@ from vision_tracker import (
     dashboard_counts,
     delete_issue,
     export_issues_to_excel,
+    export_version_dashboard_to_excel,
     initialize_database,
     issue_time_bounds,
     latest_version_by_instrument,
@@ -250,6 +251,19 @@ def run_tests() -> None:
         update_issues = search_issues({"category": "Software", "subcategory": "Program Update"}, db_path)
         assert len(update_issues) == 3
         assert all(row["status"] == "Monitoring" for row in update_issues)
+
+        version_export_path = Path(temp_dir) / "version_dashboard.xlsx"
+        export_version_dashboard_to_excel(version_export_path, db_path)
+        version_workbook = load_workbook(version_export_path)
+        version_sheet = version_workbook.active
+        assert version_sheet.title == "Version Dashboard"
+        assert version_sheet["A1"].value == "Line"
+        assert version_sheet.max_row == 1 + 4 * 7
+        exported_rows = list(version_sheet.iter_rows(min_row=2, values_only=True))
+        welding_plus = [row for row in exported_rows if row[0] == "1-1" and row[1] == "Welding(+)"][0]
+        welding_minus = [row for row in exported_rows if row[0] == "1-1" and row[1] == "Welding(-)"][0]
+        assert welding_plus[3] == "SW-1.1.0"
+        assert welding_minus[3] == "SW-1.0.0"
 
 
 if __name__ == "__main__":
