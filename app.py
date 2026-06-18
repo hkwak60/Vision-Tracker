@@ -33,10 +33,12 @@ from vision_tracker import (
     create_issue,
     dashboard_counts,
     delete_issue,
+    delete_version_template,
     export_issues_to_excel,
     export_version_dashboard_to_excel,
     format_instruments,
     get_issue,
+    get_version_template,
     initialize_database,
     issue_time_bounds,
     latest_version_by_instrument,
@@ -47,6 +49,7 @@ from vision_tracker import (
     set_issue_status,
     split_instruments,
     update_issue,
+    update_version_template,
 )
 
 
@@ -113,6 +116,8 @@ TRANSLATIONS = {
         "Algo Version": "Algo 버전",
         "Update Time": "업데이트 시간",
         "Save Version Update": "버전 업데이트 저장",
+        "Save Version": "버전 저장",
+        "Delete Version": "버전 삭제",
         "Create Monitoring Issue": "모니터링 이슈 등록",
         "Version Description": "버전 설명",
         "Group": "그룹",
@@ -660,8 +665,9 @@ class VisionIssueApp(tk.Tk):
         description_canvas.bind("<Configure>", lambda event: description_canvas.itemconfigure(description_window, width=event.width))
         description_canvas.bind("<MouseWheel>", lambda event: description_canvas.yview_scroll(int(-event.delta / 60), "units"))
         description_panel.columnconfigure(0, weight=1)
+        description_panel.columnconfigure(1, weight=1)
         description_panel.rowconfigure(2, weight=1)
-        description_panel.rowconfigure(4, weight=2)
+        description_panel.rowconfigure(7, weight=2)
         self.tr_label(description_panel, "Version Description", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
         group_buttons = ttk.Frame(description_panel, style="Panel.TFrame")
         group_buttons.grid(row=1, column=0, sticky="ew", pady=(0, 8))
@@ -679,13 +685,22 @@ class VisionIssueApp(tk.Tk):
         group_buttons.columnconfigure(0, weight=1)
         group_buttons.columnconfigure(1, weight=1)
 
-        self.version_description_list = tk.Listbox(description_panel, height=7, exportselection=False, font=("Segoe UI", 9))
+        self.version_description_list = tk.Listbox(description_panel, height=6, exportselection=False, font=("Segoe UI", 9))
         self.version_description_list.grid(row=2, column=0, sticky="nsew")
         self.version_description_list.bind("<<ListboxSelect>>", lambda _event: self.show_selected_version_description())
-        self.tr_label(description_panel, "Description", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 2))
-        self.version_description_view = tk.Text(description_panel, height=9, wrap="word", font=("Segoe UI", 9), state="disabled")
-        self.version_description_view.grid(row=4, column=0, sticky="nsew")
+        self.version_description_sw_var = tk.StringVar()
+        self.version_description_algo_var = tk.StringVar()
+        self.version_description_template_id: int | None = None
+        self.add_labeled_entry(description_panel, "SW Version", self.version_description_sw_var, 3, 0)
+        self.add_labeled_entry(description_panel, "Algo Version", self.version_description_algo_var, 4, 0)
+        self.tr_label(description_panel, "Description", style="Panel.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
+        self.version_description_view = tk.Text(description_panel, height=8, wrap="word", font=("Segoe UI", 9))
+        self.version_description_view.grid(row=6, column=0, sticky="nsew")
         self.version_description_view.bind("<MouseWheel>", lambda event: description_canvas.yview_scroll(int(-event.delta / 60), "units"))
+        description_actions = ttk.Frame(description_panel, style="Panel.TFrame")
+        description_actions.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        self.tr_button(description_actions, "Delete Version", self.delete_selected_version_template, prefix="✕ ").pack(side="left")
+        self.tr_button(description_actions, "Save Version", self.save_selected_version_template, prefix="✓ ", style="Accent.TButton").pack(side="right")
 
         self.on_version_group_changed()
         self.refresh_version_history()
@@ -750,29 +765,62 @@ class VisionIssueApp(tk.Tk):
             self.version_description_list.selection_set(0)
             self.show_selected_version_description()
         else:
-            self.set_version_description_text("No version template saved.")
+            self.version_description_template_id = None
+            self.version_description_sw_var.set("")
+            self.version_description_algo_var.set("")
+            self.set_version_description_text("")
 
     def show_selected_version_description(self) -> None:
         selection = self.version_description_list.curselection()
         if not selection:
+            self.version_description_template_id = None
             self.set_version_description_text("")
             return
         row = self.version_description_rows[selection[0]]
-        description = row["description"] or ""
-        text = (
-            f"Group: {row['group_name']}\n"
-            f"SW Version: {row['sw_version']}\n"
-            f"Algo Version: {row['algo_version']}\n"
-            "\n"
-            f"{description}"
-        )
-        self.set_version_description_text(text)
+        self.version_description_template_id = int(row["id"])
+        self.version_description_sw_var.set(row["sw_version"])
+        self.version_description_algo_var.set(row["algo_version"])
+        self.set_version_description_text(row["description"] or "")
 
     def set_version_description_text(self, value: str) -> None:
-        self.version_description_view.configure(state="normal")
         self.version_description_view.delete("1.0", "end")
         self.version_description_view.insert("1.0", value)
-        self.version_description_view.configure(state="disabled")
+
+    def save_selected_version_template(self) -> None:
+        if self.version_description_template_id is None:
+            messagebox.showwarning(APP_TITLE, "Select a version first.")
+            return
+        try:
+            update_version_template(
+                self.version_description_template_id,
+                self.version_description_sw_var.get().strip(),
+                self.version_description_algo_var.get().strip(),
+                self.version_description_view.get("1.0", "end").strip(),
+                self.current_worker_var.get().strip(),
+            )
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self.refresh_version_history()
+        messagebox.showinfo(APP_TITLE, "Version updated.")
+
+    def delete_selected_version_template(self) -> None:
+        if self.version_description_template_id is None:
+            messagebox.showwarning(APP_TITLE, "Select a version first.")
+            return
+        row = get_version_template(self.version_description_template_id)
+        title = "selected version"
+        if row:
+            title = f"{row['group_name']} / SW {row['sw_version']} / Algo {row['algo_version']}"
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"Delete this version?\n\n{title}\n\nApplied version dashboard records for this version will also be removed.",
+        ):
+            return
+        delete_version_template(self.version_description_template_id)
+        self.version_description_template_id = None
+        self.refresh_version_history()
+        messagebox.showinfo(APP_TITLE, "Version deleted.")
 
     def load_selected_version_template(self) -> None:
         row = getattr(self, "version_template_rows", {}).get(self.version_template_var.get())

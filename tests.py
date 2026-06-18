@@ -11,8 +11,10 @@ from vision_tracker import (
     create_issue,
     dashboard_counts,
     delete_issue,
+    delete_version_template,
     export_issues_to_excel,
     export_version_dashboard_to_excel,
+    get_version_template,
     initialize_database,
     issue_time_bounds,
     latest_version_by_instrument,
@@ -21,6 +23,7 @@ from vision_tracker import (
     search_issues,
     set_issue_status,
     update_issue,
+    update_version_template,
     version_history_rows,
 )
 
@@ -264,6 +267,26 @@ def run_tests() -> None:
         welding_minus = [row for row in exported_rows if row[0] == "1-1" and row[1] == "Welding(-)"][0]
         assert welding_plus[3] == "SW-1.1.0"
         assert welding_minus[3] == "SW-1.0.0"
+
+        latest_template_id = templates[0]["id"]
+        update_version_template(
+            latest_template_id,
+            "SW-1.1.1",
+            "ALG-2.1.1",
+            "Edited plus version description.",
+            "Jihoon Yun",
+            db_path,
+        )
+        edited_template = get_version_template(latest_template_id, db_path)
+        assert edited_template["sw_version"] == "SW-1.1.1"
+        latest_versions = latest_version_by_instrument(db_path)
+        assert latest_versions[("1-1", "Welding(+)")]["sw_version"] == "SW-1.1.1"
+        assert latest_versions[("1-1", "Welding(+)")]["description"] == "Edited plus version description."
+
+        delete_version_template(latest_template_id, db_path)
+        latest_versions = latest_version_by_instrument(db_path)
+        assert latest_versions[("1-1", "Welding(+)")]["sw_version"] == "SW-1.0.0"
+        assert latest_versions[("1-1", "Welding(-)")]["sw_version"] == "SW-1.0.0"
 
 
 if __name__ == "__main__":

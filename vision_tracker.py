@@ -426,6 +426,90 @@ def recent_version_templates(group_name: str, limit: int = 3, db_path: Path = DB
         )
 
 
+def get_version_template(template_id: int, db_path: Path = DB_PATH) -> sqlite3.Row | None:
+    with closing(connect(db_path)) as conn:
+        return conn.execute(
+            """
+            SELECT id, group_name, sw_version, algo_version, description, worker, created_at, updated_at
+            FROM version_templates
+            WHERE id = ?
+            """,
+            (template_id,),
+        ).fetchone()
+
+
+def update_version_template(
+    template_id: int,
+    sw_version: str,
+    algo_version: str,
+    description: str,
+    worker: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    if not sw_version.strip() or not algo_version.strip():
+        raise ValueError("SW Version and Algo Version are required.")
+    timestamp = now_text()
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT group_name, sw_version, algo_version
+            FROM version_templates
+            WHERE id = ?
+            """,
+            (template_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Version template was not found.")
+        conn.execute(
+            """
+            UPDATE version_templates
+            SET sw_version = ?, algo_version = ?, description = ?, worker = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (sw_version.strip(), algo_version.strip(), description, worker, timestamp, template_id),
+        )
+        conn.execute(
+            """
+            UPDATE version_history
+            SET sw_version = ?, algo_version = ?, description = ?, worker = ?
+            WHERE group_name = ? AND sw_version = ? AND algo_version = ?
+            """,
+            (
+                sw_version.strip(),
+                algo_version.strip(),
+                description,
+                worker,
+                row["group_name"],
+                row["sw_version"],
+                row["algo_version"],
+            ),
+        )
+        conn.commit()
+
+
+def delete_version_template(template_id: int, db_path: Path = DB_PATH) -> None:
+    with closing(connect(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT group_name, sw_version, algo_version
+            FROM version_templates
+            WHERE id = ?
+            """,
+            (template_id,),
+        ).fetchone()
+        if row is None:
+            return
+        conn.execute("DELETE FROM version_templates WHERE id = ?", (template_id,))
+        conn.execute(
+            """
+            DELETE FROM version_history
+            WHERE group_name = ? AND sw_version = ? AND algo_version = ?
+            """,
+            (row["group_name"], row["sw_version"], row["algo_version"]),
+        )
+        conn.commit()
+
+
 def latest_version_by_instrument(db_path: Path = DB_PATH) -> dict[tuple[str, str], sqlite3.Row]:
     with closing(connect(db_path)) as conn:
         rows = conn.execute(
