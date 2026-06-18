@@ -21,11 +21,15 @@ from vision_tracker import (
     CATEGORIES,
     CATEGORY_MAP,
     INSTRUMENTS,
+    INSTRUMENT_GROUP,
     LINES,
     STATUS_OPTIONS,
+    VERSION_GROUPS,
     WORKERS,
     IssueInput,
+    VersionInput,
     active_issues,
+    create_version_update,
     create_issue,
     dashboard_counts,
     delete_issue,
@@ -34,12 +38,15 @@ from vision_tracker import (
     get_issue,
     initialize_database,
     issue_time_bounds,
+    latest_version_by_instrument,
     now_text,
+    recent_version_templates,
     resolve_issue,
     search_issues,
     set_issue_status,
     split_instruments,
     update_issue,
+    version_history_rows,
 )
 
 
@@ -57,6 +64,7 @@ TRANSLATIONS = {
         "Open Issues": "미해결 이슈",
         "New / Edit Issue": "이슈 등록 / 수정",
         "Search & Excel Report": "검색 및 엑셀 보고서",
+        "Version History": "버전 기록",
         "Action Required": "조치 필요",
         "Monitoring": "모니터링",
         "Resolved": "해결됨",
@@ -95,6 +103,17 @@ TRANSLATIONS = {
         "Search": "검색",
         "Excel": "엑셀",
         "Vision Filter": "비전 필터",
+        "Version Dashboard": "버전 대시보드",
+        "Version Update": "버전 업데이트",
+        "Version Group": "버전 그룹",
+        "Version Template": "버전 템플릿",
+        "SW Version": "SW 버전",
+        "Algo Version": "Algo 버전",
+        "Update Time": "업데이트 시간",
+        "Save Version Update": "버전 업데이트 저장",
+        "Create Monitoring Issue": "모니터링 이슈 등록",
+        "Recent Version History": "최근 버전 기록",
+        "Group": "그룹",
     }
 }
 
@@ -170,13 +189,16 @@ class VisionIssueApp(tk.Tk):
         self.open_tab = ttk.Frame(self.notebook, padding=14)
         self.entry_tab = ttk.Frame(self.notebook, padding=14)
         self.search_tab = ttk.Frame(self.notebook, padding=14)
+        self.version_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.open_tab, text="Open Issues")
         self.notebook.add(self.entry_tab, text="New / Edit Issue")
         self.notebook.add(self.search_tab, text="Search & Excel Report")
+        self.notebook.add(self.version_tab, text="Version History")
 
         self.build_open_tab()
         self.build_entry_tab()
         self.build_search_tab()
+        self.build_version_tab()
         self.apply_language()
 
     def text(self, key: str) -> str:
@@ -206,9 +228,12 @@ class VisionIssueApp(tk.Tk):
             self.notebook.tab(self.open_tab, text=self.text("Open Issues"))
             self.notebook.tab(self.entry_tab, text=self.text("New / Edit Issue"))
             self.notebook.tab(self.search_tab, text=self.text("Search & Excel Report"))
+            self.notebook.tab(self.version_tab, text=self.text("Version History"))
         for tree_name in ["open_tree", "search_tree"]:
             if hasattr(self, tree_name):
                 self.update_tree_headings(getattr(self, tree_name))
+        if hasattr(self, "version_tree"):
+            self.update_version_tree_headings()
 
     def update_tree_headings(self, tree: ttk.Treeview) -> None:
         headings = {
@@ -503,6 +528,308 @@ class VisionIssueApp(tk.Tk):
         search_scroll.grid(row=0, column=1, sticky="ns")
         self.search_tree.configure(yscrollcommand=search_scroll.set)
         self.search_tree.bind("<Double-1>", lambda _event: self.load_selected_search_issue())
+
+    def build_version_tab(self) -> None:
+        content = ttk.Frame(self.version_tab)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=2)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(1, weight=1)
+
+        dashboard_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        dashboard_panel.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        self.tr_label(dashboard_panel, "Version Dashboard", style="Subheader.TLabel").pack(anchor="w", pady=(0, 8))
+        self.version_dashboard = ttk.Frame(dashboard_panel, style="Panel.TFrame")
+        self.version_dashboard.pack(fill="x")
+        self.version_cards: dict[tuple[str, str], tk.Label] = {}
+        for column_index, instrument in enumerate(INSTRUMENTS):
+            section = ttk.Frame(self.version_dashboard, style="Panel.TFrame", padding=6)
+            section.grid(row=0, column=column_index, sticky="nsew", padx=(0, 6))
+            ttk.Label(section, text=instrument, style="Subheader.TLabel", anchor="center").pack(fill="x")
+            for line in LINES:
+                card = tk.Label(
+                    section,
+                    text=f"{line}\nNo Version",
+                    justify="left",
+                    anchor="nw",
+                    width=17,
+                    height=5,
+                    bg="#ffffff",
+                    fg="#111827",
+                    relief="solid",
+                    bd=1,
+                    padx=6,
+                    pady=5,
+                    font=("Segoe UI", 8),
+                )
+                card.pack(fill="x", pady=(6, 0))
+                card.bind("<Button-1>", lambda _event, selected_line=line, selected_instrument=instrument: self.select_version_target(selected_line, selected_instrument))
+                self.version_cards[(line, instrument)] = card
+            self.version_dashboard.columnconfigure(column_index, weight=1)
+
+        editor = ttk.Frame(content, style="Panel.TFrame", padding=14)
+        editor.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        editor.columnconfigure(1, weight=1)
+        editor.columnconfigure(3, weight=1)
+        editor.rowconfigure(8, weight=1)
+        self.tr_label(editor, "Version Update", style="Subheader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+
+        self.version_group_var = tk.StringVar(value=list(VERSION_GROUPS.keys())[0])
+        self.version_template_var = tk.StringVar()
+        self.version_update_time_var = tk.StringVar(value=now_text())
+        self.version_sw_var = tk.StringVar()
+        self.version_algo_var = tk.StringVar()
+        self.version_create_issue_var = tk.BooleanVar(value=True)
+        self.version_selected_lines = {LINES[0]}
+        self.version_selected_instruments = {VERSION_GROUPS[self.version_group_var.get()][0]}
+
+        group_combo = self.add_labeled_combo(editor, "Version Group", self.version_group_var, list(VERSION_GROUPS.keys()), 1, 0)
+        group_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_version_group_changed())
+        self.version_template_combo = self.add_labeled_combo(editor, "Version Template", self.version_template_var, [], 1, 2)
+        self.version_template_combo.bind("<<ComboboxSelected>>", lambda _event: self.load_selected_version_template())
+        self.add_labeled_entry(editor, "Update Time", self.version_update_time_var, 2, 0)
+        self.add_labeled_entry(editor, "SW Version", self.version_sw_var, 2, 2)
+        self.add_labeled_entry(editor, "Algo Version", self.version_algo_var, 3, 0)
+        ttk.Checkbutton(
+            editor,
+            text=self.text("Create Monitoring Issue"),
+            variable=self.version_create_issue_var,
+        ).grid(row=3, column=2, columnspan=2, sticky="w", pady=7)
+
+        target_frame = ttk.Frame(editor, style="Panel.TFrame")
+        target_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8, 10))
+        self.version_line_buttons: dict[str, tk.Button] = {}
+        self.version_instrument_buttons: dict[str, tk.Button] = {}
+        self.tr_label(target_frame, "Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        for column_index, line in enumerate(LINES, start=1):
+            button = tk.Button(target_frame, text=line, width=10, command=lambda selected_line=line: self.toggle_version_line(selected_line))
+            button.grid(row=0, column=column_index, padx=2, pady=3)
+            self.version_line_buttons[line] = button
+        self.tr_label(target_frame, "Vision", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
+        for column_index, instrument in enumerate(INSTRUMENTS, start=1):
+            button = tk.Button(target_frame, text=instrument, width=14, command=lambda selected_instrument=instrument: self.toggle_version_instrument(selected_instrument))
+            button.grid(row=1, column=column_index, padx=2, pady=3)
+            self.version_instrument_buttons[instrument] = button
+
+        self.tr_label(editor, "Description", style="Panel.TLabel").grid(row=5, column=0, sticky="nw", pady=7)
+        self.version_description_text = tk.Text(editor, height=8, wrap="word", font=("Segoe UI", 10))
+        self.version_description_text.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=7)
+
+        actions = ttk.Frame(editor, style="Panel.TFrame")
+        actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        self.tr_button(actions, "Refresh", self.refresh_version_history, prefix="↻ ").pack(side="left")
+        self.tr_button(actions, "Save Version Update", self.save_version_updates, prefix="✓ ", style="Accent.TButton").pack(side="right")
+
+        history_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        history_panel.grid(row=1, column=1, sticky="nsew")
+        history_panel.columnconfigure(0, weight=1)
+        history_panel.rowconfigure(1, weight=1)
+        self.tr_label(history_panel, "Recent Version History", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.version_tree = self.make_version_tree(history_panel)
+        self.version_tree.grid(row=1, column=0, sticky="nsew")
+        version_scroll = ttk.Scrollbar(history_panel, orient="vertical", command=self.version_tree.yview)
+        version_scroll.grid(row=1, column=1, sticky="ns")
+        self.version_tree.configure(yscrollcommand=version_scroll.set)
+
+        self.on_version_group_changed()
+        self.refresh_version_history()
+
+    def make_version_tree(self, parent: ttk.Frame) -> ttk.Treeview:
+        columns = ("id", "update_time", "group_name", "line", "instrument", "sw_version", "algo_version", "worker")
+        tree = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse")
+        widths = {
+            "id": 48,
+            "update_time": 130,
+            "group_name": 90,
+            "line": 58,
+            "instrument": 110,
+            "sw_version": 100,
+            "algo_version": 100,
+            "worker": 110,
+        }
+        for column in columns:
+            tree.column(column, width=widths[column], anchor="w")
+        tree.bind("<MouseWheel>", lambda event: tree.yview_scroll(int(-event.delta / 60), "units"))
+        self.update_version_tree_headings(tree)
+        return tree
+
+    def update_version_tree_headings(self, tree: ttk.Treeview | None = None) -> None:
+        tree = tree or self.version_tree
+        headings = {
+            "id": "ID",
+            "update_time": "Update Time",
+            "group_name": "Group",
+            "line": "Line",
+            "instrument": "Vision",
+            "sw_version": "SW Version",
+            "algo_version": "Algo Version",
+            "worker": "Logged By",
+        }
+        for column, key in headings.items():
+            tree.heading(column, text=self.text(key))
+
+    def on_version_group_changed(self) -> None:
+        group_name = self.version_group_var.get()
+        allowed = VERSION_GROUPS[group_name]
+        self.version_selected_instruments = {allowed[0]}
+        self.refresh_version_target_buttons()
+        self.refresh_version_templates()
+
+    def refresh_version_templates(self) -> None:
+        templates = recent_version_templates(self.version_group_var.get(), 3)
+        self.version_template_rows = {
+            f"{row['sw_version']} / {row['algo_version']}": row
+            for row in templates
+        }
+        values = list(self.version_template_rows.keys())
+        self.version_template_combo.configure(values=values)
+        if values:
+            self.version_template_var.set(values[0])
+            self.load_selected_version_template()
+        else:
+            self.version_template_var.set("")
+            self.version_sw_var.set("")
+            self.version_algo_var.set("")
+            self.version_description_text.delete("1.0", "end")
+
+    def load_selected_version_template(self) -> None:
+        row = getattr(self, "version_template_rows", {}).get(self.version_template_var.get())
+        if row is None:
+            return
+        self.version_sw_var.set(row["sw_version"])
+        self.version_algo_var.set(row["algo_version"])
+        self.version_description_text.delete("1.0", "end")
+        self.version_description_text.insert("1.0", row["description"] or "")
+
+    def select_version_target(self, line: str, instrument: str) -> None:
+        self.version_group_var.set(INSTRUMENT_GROUP[instrument])
+        self.version_selected_lines = {line}
+        self.version_selected_instruments = {instrument}
+        self.refresh_version_templates()
+        self.refresh_version_target_buttons()
+
+    def toggle_version_line(self, line: str) -> None:
+        if line in self.version_selected_lines and len(self.version_selected_lines) > 1:
+            self.version_selected_lines.remove(line)
+        else:
+            self.version_selected_lines.add(line)
+        self.refresh_version_target_buttons()
+
+    def toggle_version_instrument(self, instrument: str) -> None:
+        if INSTRUMENT_GROUP[instrument] != self.version_group_var.get():
+            return
+        if instrument in self.version_selected_instruments and len(self.version_selected_instruments) > 1:
+            self.version_selected_instruments.remove(instrument)
+        else:
+            self.version_selected_instruments.add(instrument)
+        self.refresh_version_target_buttons()
+
+    def refresh_version_target_buttons(self) -> None:
+        selected_bg = "#1f6feb"
+        selected_fg = "#ffffff"
+        disabled_bg = "#e5e7eb"
+        default_bg = self.cget("bg")
+        default_fg = "#111827"
+        for line, button in self.version_line_buttons.items():
+            is_selected = line in self.version_selected_lines
+            button.configure(
+                background=selected_bg if is_selected else default_bg,
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
+        group_name = self.version_group_var.get()
+        for instrument, button in self.version_instrument_buttons.items():
+            is_allowed = INSTRUMENT_GROUP[instrument] == group_name
+            is_selected = instrument in self.version_selected_instruments
+            button.configure(
+                state="normal" if is_allowed else "disabled",
+                background=selected_bg if is_selected else (default_bg if is_allowed else disabled_bg),
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
+
+    def save_version_updates(self) -> None:
+        lines = sorted(self.version_selected_lines, key=LINES.index)
+        instruments = sorted(self.version_selected_instruments, key=INSTRUMENTS.index)
+        if not lines or not instruments:
+            messagebox.showwarning(APP_TITLE, "Select at least one line and one vision.")
+            return
+        description = self.version_description_text.get("1.0", "end").strip()
+        saved_count = 0
+        try:
+            for line in lines:
+                for instrument in instruments:
+                    create_version_update(
+                        VersionInput(
+                            update_time=self.version_update_time_var.get().strip(),
+                            group_name=self.version_group_var.get(),
+                            line=line,
+                            instrument=instrument,
+                            sw_version=self.version_sw_var.get().strip(),
+                            algo_version=self.version_algo_var.get().strip(),
+                            description=description,
+                            worker=self.current_worker_var.get().strip(),
+                        ),
+                        self.version_create_issue_var.get(),
+                    )
+                    saved_count += 1
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self.refresh_version_history()
+        self.refresh_open_issues()
+        self.search_records()
+        messagebox.showinfo(APP_TITLE, f"{saved_count} version update record(s) saved.")
+
+    def refresh_version_history(self) -> None:
+        self.populate_version_dashboard()
+        self.populate_version_tree()
+        self.refresh_version_templates()
+
+    def populate_version_dashboard(self) -> None:
+        latest = latest_version_by_instrument()
+        recent_threshold = datetime.now() - timedelta(days=7)
+        for line in LINES:
+            for instrument in INSTRUMENTS:
+                row = latest.get((line, instrument))
+                card = self.version_cards[(line, instrument)]
+                if row is None:
+                    card.configure(text=f"{line}\nNo Version", bg="#fff1f2", fg="#9f1239")
+                    continue
+                text = (
+                    f"{line}\n"
+                    f"SW {row['sw_version']}\n"
+                    f"Algo {row['algo_version']}\n"
+                    f"{row['update_time']}"
+                )
+                try:
+                    updated = datetime.strptime(row["update_time"], "%Y-%m-%d %H:%M")
+                except ValueError:
+                    updated = datetime.min
+                bg = "#ecfdf3" if updated >= recent_threshold else "#ffffff"
+                fg = "#166534" if updated >= recent_threshold else "#111827"
+                card.configure(text=text, bg=bg, fg=fg)
+
+    def populate_version_tree(self) -> None:
+        rows = version_history_rows()
+        for item in self.version_tree.get_children():
+            self.version_tree.delete(item)
+        for row_number, row in enumerate(rows, start=1):
+            self.version_tree.insert(
+                "",
+                "end",
+                iid=str(row["id"]),
+                values=(
+                    row_number,
+                    row["update_time"],
+                    row["group_name"],
+                    row["line"],
+                    row["instrument"],
+                    row["sw_version"],
+                    row["algo_version"],
+                    row["worker"],
+                ),
+            )
 
     def make_issue_tree(self, parent: ttk.Frame) -> ttk.Treeview:
         columns = ("id", "issue_time", "line", "instrument", "category", "subcategory", "title", "status", "worker")

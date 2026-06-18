@@ -5,17 +5,22 @@ from openpyxl import load_workbook
 
 from vision_tracker import (
     IssueInput,
+    VersionInput,
     active_issues,
+    create_version_update,
     create_issue,
     dashboard_counts,
     delete_issue,
     export_issues_to_excel,
     initialize_database,
     issue_time_bounds,
+    latest_version_by_instrument,
+    recent_version_templates,
     resolve_issue,
     search_issues,
     set_issue_status,
     update_issue,
+    version_history_rows,
 )
 
 
@@ -191,6 +196,60 @@ def run_tests() -> None:
         assert any(row["id"] == multi_id for row in minus_rows)
         multi_filter_rows = search_issues({"instrument": "Lead / Welding(-)"}, db_path)
         assert any(row["id"] == multi_id for row in multi_filter_rows)
+
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-17 14:00",
+                group_name="Welding",
+                line="1-1",
+                instrument="Welding(+)",
+                sw_version="SW-1.0.0",
+                algo_version="ALG-2.0.0",
+                description="Initial welding plus version record.",
+                worker="Jihoon Yun",
+            ),
+            True,
+            db_path,
+        )
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-17 14:05",
+                group_name="Welding",
+                line="1-1",
+                instrument="Welding(-)",
+                sw_version="SW-1.0.0",
+                algo_version="ALG-2.0.0",
+                description="Initial welding minus version record.",
+                worker="Jihoon Yun",
+            ),
+            True,
+            db_path,
+        )
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-17 15:00",
+                group_name="Welding",
+                line="1-1",
+                instrument="Welding(+)",
+                sw_version="SW-1.1.0",
+                algo_version="ALG-2.1.0",
+                description="Updated plus vision only.",
+                worker="Jihoon Yun",
+            ),
+            True,
+            db_path,
+        )
+        latest_versions = latest_version_by_instrument(db_path)
+        assert latest_versions[("1-1", "Welding(+)")]["sw_version"] == "SW-1.1.0"
+        assert latest_versions[("1-1", "Welding(-)")]["sw_version"] == "SW-1.0.0"
+        templates = recent_version_templates("Welding", 3, db_path)
+        assert len(templates) == 2
+        assert templates[0]["sw_version"] == "SW-1.1.0"
+        history = version_history_rows(db_path)
+        assert history[0]["instrument"] == "Welding(+)"
+        update_issues = search_issues({"category": "Software", "subcategory": "Program Update"}, db_path)
+        assert len(update_issues) == 3
+        assert all(row["status"] == "Monitoring" for row in update_issues)
 
 
 if __name__ == "__main__":

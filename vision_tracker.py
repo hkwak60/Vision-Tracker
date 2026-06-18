@@ -31,13 +31,24 @@ ACTIVE_STATUS_OPTIONS = ["Action Required", "Monitoring"]
 STATUS_OPTIONS = ACTIVE_STATUS_OPTIONS + ["Resolved"]
 CATEGORY_MAP = {
     "Hardware": ["Camera", "Lighting"],
-    "Software": ["Program Crash", "UI", "PLC", "Other"],
+    "Software": ["Program Crash", "Program Update", "UI", "PLC", "Other"],
     "Recipe": ["Overkill", "Underkill", "Add Measure", "Bypass/Unbypass"],
     "Camera Grab Fail": [""],
     "Production": [""],
     "Other": [""],
 }
 CATEGORIES = list(CATEGORY_MAP.keys())
+VERSION_GROUPS = {
+    "Welding": ["Welding(+)", "Welding(-)"],
+    "Common": ["Pinhole", "Pouch Align", "Lead Align"],
+    "New Lead": ["Lead"],
+    "Sealing": ["Sealing"],
+}
+INSTRUMENT_GROUP = {
+    instrument: group_name
+    for group_name, instruments in VERSION_GROUPS.items()
+    for instrument in instruments
+}
 
 
 def split_instruments(value: str) -> list[str]:
@@ -63,6 +74,18 @@ class IssueInput:
     status: str = ACTIVE_STATUS_OPTIONS[0]
     resolved_time: str = ""
     resolution_notes: str = ""
+
+
+@dataclass(frozen=True)
+class VersionInput:
+    update_time: str
+    group_name: str
+    line: str
+    instrument: str
+    sw_version: str
+    algo_version: str
+    description: str
+    worker: str
 
 
 def now_text() -> str:
@@ -112,6 +135,50 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_issues_lookup
             ON issues(status, category, subcategory, line, instrument, issue_time)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS version_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_name TEXT NOT NULL,
+                sw_version TEXT NOT NULL,
+                algo_version TEXT NOT NULL,
+                description TEXT,
+                worker TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_version_templates_lookup
+            ON version_templates(group_name, updated_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS version_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                update_time TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                line TEXT NOT NULL,
+                instrument TEXT NOT NULL,
+                sw_version TEXT NOT NULL,
+                algo_version TEXT NOT NULL,
+                description TEXT,
+                worker TEXT NOT NULL,
+                created_issue_id INTEGER,
+                FOREIGN KEY(created_issue_id) REFERENCES issues(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_version_history_lookup
+            ON version_history(line, instrument, group_name, update_time)
             """
         )
         conn.execute("UPDATE issues SET status = 'Action Required' WHERE status = 'Open'")
@@ -264,6 +331,189 @@ def delete_issue(issue_id: int, db_path: Path = DB_PATH) -> None:
     with closing(connect(db_path)) as conn:
         conn.execute("DELETE FROM issues WHERE id = ?", (issue_id,))
         conn.commit()
+
+
+def validate_version_update(version: VersionInput) -> list[str]:
+    errors: list[str] = []
+    required = {
+        "Update time": version.update_time,
+        "Group": version.group_name,
+        "Line": version.line,
+        "Instrument": version.instrument,
+        "SW Version": version.sw_version,
+        "Algo Version": version.algo_version,
+        "Worker": version.worker,
+    }
+    for label, value in required.items():
+        if not value.strip():
+            errors.append(f"{label} is required.")
+    try:
+        datetime.strptime(version.update_time, "%Y-%m-%d %H:%M")
+    except ValueError:
+        errors.append("Update time must use YYYY-MM-DD HH:MM format.")
+    if version.group_name not in VERSION_GROUPS:
+        errors.append("Version group is not valid.")
+    if version.line not in LINES:
+        errors.append("Line is not valid.")
+    if version.instrument not in INSTRUMENTS:
+        errors.append("Instrument is not valid.")
+    if version.instrument and version.group_name != INSTRUMENT_GROUP.get(version.instrument):
+        errors.append("Instrument is not part of the selected version group.")
+    return errors
+
+
+def save_version_template(
+    group_name: str,
+    sw_version: str,
+    algo_version: str,
+    description: str,
+    worker: str,
+    db_path: Path = DB_PATH,
+) -> int:
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if not sw_version.strip() or not algo_version.strip():
+        raise ValueError("SW Version and Algo Version are required.")
+    timestamp = now_text()
+    with closing(connect(db_path)) as conn:
+        existing = conn.execute(
+            """
+            SELECT id FROM version_templates
+            WHERE group_name = ? AND sw_version = ? AND algo_version = ?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (group_name, sw_version.strip(), algo_version.strip()),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """
+                UPDATE version_templates
+                SET description = ?, worker = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (description, worker, timestamp, existing["id"]),
+            )
+            conn.commit()
+            return int(existing["id"])
+        cursor = conn.execute(
+            """
+            INSERT INTO version_templates (
+                group_name, sw_version, algo_version, description, worker, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (group_name, sw_version.strip(), algo_version.strip(), description, worker, timestamp, timestamp),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def recent_version_templates(group_name: str, limit: int = 3, db_path: Path = DB_PATH) -> list[sqlite3.Row]:
+    with closing(connect(db_path)) as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT id, group_name, sw_version, algo_version, description, worker, created_at, updated_at
+                FROM version_templates
+                WHERE group_name = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+                """,
+                (group_name, limit),
+            )
+        )
+
+
+def latest_version_by_instrument(db_path: Path = DB_PATH) -> dict[tuple[str, str], sqlite3.Row]:
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT vh.*
+            FROM version_history vh
+            JOIN (
+                SELECT line, instrument, MAX(update_time || printf('%012d', id)) AS latest_key
+                FROM version_history
+                GROUP BY line, instrument
+            ) latest
+              ON latest.line = vh.line
+             AND latest.instrument = vh.instrument
+             AND latest.latest_key = vh.update_time || printf('%012d', vh.id)
+            """
+        ).fetchall()
+        return {(row["line"], row["instrument"]): row for row in rows}
+
+
+def version_history_rows(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
+    with closing(connect(db_path)) as conn:
+        return list(
+            conn.execute(
+                """
+                SELECT id, update_time, group_name, line, instrument, sw_version,
+                       algo_version, description, worker, created_issue_id
+                FROM version_history
+                ORDER BY update_time DESC, id DESC
+                """
+            )
+        )
+
+
+def create_version_update(
+    version: VersionInput,
+    create_program_update_issue: bool = True,
+    db_path: Path = DB_PATH,
+) -> int:
+    errors = validate_version_update(version)
+    if errors:
+        raise ValueError("\n".join(errors))
+
+    save_version_template(
+        version.group_name,
+        version.sw_version,
+        version.algo_version,
+        version.description,
+        version.worker,
+        db_path,
+    )
+    created_issue_id: int | None = None
+    if create_program_update_issue:
+        issue = IssueInput(
+            issue_time=version.update_time,
+            resolved_time="00:00",
+            line=version.line,
+            instrument=version.instrument,
+            worker=version.worker,
+            category="Software",
+            subcategory="Program Update",
+            title=f"Program Update - {version.line} {version.instrument} SW {version.sw_version} / Algo {version.algo_version}",
+            description=version.description,
+            status="Monitoring",
+        )
+        created_issue_id = create_issue(issue, db_path)
+
+    with closing(connect(db_path)) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO version_history (
+                created_at, update_time, group_name, line, instrument, sw_version,
+                algo_version, description, worker, created_issue_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now_text(),
+                version.update_time,
+                version.group_name,
+                version.line,
+                version.instrument,
+                version.sw_version,
+                version.algo_version,
+                version.description,
+                version.worker,
+                created_issue_id,
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
 
 
 def build_search_query(filters: dict[str, str]) -> tuple[str, list[Any]]:
