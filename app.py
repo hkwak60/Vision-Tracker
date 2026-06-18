@@ -46,7 +46,6 @@ from vision_tracker import (
     set_issue_status,
     split_instruments,
     update_issue,
-    version_history_rows,
 )
 
 
@@ -112,7 +111,7 @@ TRANSLATIONS = {
         "Update Time": "업데이트 시간",
         "Save Version Update": "버전 업데이트 저장",
         "Create Monitoring Issue": "모니터링 이슈 등록",
-        "Recent Version History": "최근 버전 기록",
+        "Version Description": "버전 설명",
         "Group": "그룹",
     }
 }
@@ -143,6 +142,7 @@ class VisionIssueApp(tk.Tk):
     def configure_styles(self) -> None:
         self.style.configure("TNotebook", background="#f4f6f8", borderwidth=0)
         self.style.configure("TNotebook.Tab", padding=(18, 10), font=("Segoe UI", 10, "bold"))
+        self.style.map("TNotebook.Tab", background=[("disabled", "#ffffff")], foreground=[("disabled", "#ffffff")])
         self.style.configure("TFrame", background="#f4f6f8")
         self.style.configure("Panel.TFrame", background="#ffffff", relief="solid", borderwidth=1)
         self.style.configure("TLabel", background="#f4f6f8", font=("Segoe UI", 10))
@@ -235,8 +235,6 @@ class VisionIssueApp(tk.Tk):
         for tree_name in ["open_tree", "search_tree"]:
             if hasattr(self, tree_name):
                 self.update_tree_headings(getattr(self, tree_name))
-        if hasattr(self, "version_tree"):
-            self.update_version_tree_headings()
 
     def update_tree_headings(self, tree: ttk.Treeview) -> None:
         headings = {
@@ -535,7 +533,7 @@ class VisionIssueApp(tk.Tk):
     def build_version_tab(self) -> None:
         content = ttk.Frame(self.version_tab)
         content.pack(fill="both", expand=True)
-        content.columnconfigure(0, weight=2)
+        content.columnconfigure(0, weight=5)
         content.columnconfigure(1, weight=1)
         content.rowconfigure(1, weight=1)
 
@@ -636,53 +634,37 @@ class VisionIssueApp(tk.Tk):
         self.tr_button(actions, "Refresh", self.refresh_version_history, prefix="↻ ").pack(side="left")
         self.tr_button(actions, "Save Version Update", self.save_version_updates, prefix="✓ ", style="Accent.TButton").pack(side="right")
 
-        history_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
-        history_panel.grid(row=1, column=1, sticky="nsew")
-        history_panel.columnconfigure(0, weight=1)
-        history_panel.rowconfigure(1, weight=1)
-        self.tr_label(history_panel, "Recent Version History", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self.version_tree = self.make_version_tree(history_panel)
-        self.version_tree.grid(row=1, column=0, sticky="nsew")
-        version_scroll = ttk.Scrollbar(history_panel, orient="vertical", command=self.version_tree.yview)
-        version_scroll.grid(row=1, column=1, sticky="ns")
-        self.version_tree.configure(yscrollcommand=version_scroll.set)
+        description_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        description_panel.grid(row=1, column=1, sticky="nsew")
+        description_panel.columnconfigure(0, weight=1)
+        description_panel.rowconfigure(2, weight=1)
+        description_panel.rowconfigure(4, weight=2)
+        self.tr_label(description_panel, "Version Description", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        group_buttons = ttk.Frame(description_panel, style="Panel.TFrame")
+        group_buttons.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        self.version_description_group_var = tk.StringVar(value=list(VERSION_GROUPS.keys())[0])
+        self.version_description_buttons: dict[str, tk.Button] = {}
+        for index, group_name in enumerate(VERSION_GROUPS):
+            button = tk.Button(
+                group_buttons,
+                text=group_name,
+                width=10,
+                command=lambda selected_group=group_name: self.select_description_group(selected_group),
+            )
+            button.grid(row=index // 2, column=index % 2, sticky="ew", padx=2, pady=2)
+            self.version_description_buttons[group_name] = button
+        group_buttons.columnconfigure(0, weight=1)
+        group_buttons.columnconfigure(1, weight=1)
+
+        self.version_description_list = tk.Listbox(description_panel, height=7, exportselection=False, font=("Segoe UI", 9))
+        self.version_description_list.grid(row=2, column=0, sticky="nsew")
+        self.version_description_list.bind("<<ListboxSelect>>", lambda _event: self.show_selected_version_description())
+        self.tr_label(description_panel, "Description", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 2))
+        self.version_description_view = tk.Text(description_panel, height=9, wrap="word", font=("Segoe UI", 9), state="disabled")
+        self.version_description_view.grid(row=4, column=0, sticky="nsew")
 
         self.on_version_group_changed()
         self.refresh_version_history()
-
-    def make_version_tree(self, parent: ttk.Frame) -> ttk.Treeview:
-        columns = ("id", "update_time", "group_name", "line", "instrument", "sw_version", "algo_version", "worker")
-        tree = ttk.Treeview(parent, columns=columns, show="headings", selectmode="browse")
-        widths = {
-            "id": 48,
-            "update_time": 130,
-            "group_name": 90,
-            "line": 58,
-            "instrument": 110,
-            "sw_version": 100,
-            "algo_version": 100,
-            "worker": 110,
-        }
-        for column in columns:
-            tree.column(column, width=widths[column], anchor="w")
-        tree.bind("<MouseWheel>", lambda event: tree.yview_scroll(int(-event.delta / 60), "units"))
-        self.update_version_tree_headings(tree)
-        return tree
-
-    def update_version_tree_headings(self, tree: ttk.Treeview | None = None) -> None:
-        tree = tree or self.version_tree
-        headings = {
-            "id": "ID",
-            "update_time": "Update Time",
-            "group_name": "Group",
-            "line": "Line",
-            "instrument": "Vision",
-            "sw_version": "SW Version",
-            "algo_version": "Algo Version",
-            "worker": "Logged By",
-        }
-        for column, key in headings.items():
-            tree.heading(column, text=self.text(key))
 
     def on_version_group_changed(self) -> None:
         group_name = self.version_group_var.get()
@@ -707,6 +689,59 @@ class VisionIssueApp(tk.Tk):
             self.version_sw_var.set("")
             self.version_algo_var.set("")
             self.version_description_text.delete("1.0", "end")
+
+    def select_description_group(self, group_name: str) -> None:
+        self.version_description_group_var.set(group_name)
+        self.populate_version_description_dashboard()
+
+    def refresh_description_group_buttons(self) -> None:
+        selected_bg = "#1f6feb"
+        selected_fg = "#ffffff"
+        default_bg = self.cget("bg")
+        default_fg = "#111827"
+        for group_name, button in self.version_description_buttons.items():
+            is_selected = group_name == self.version_description_group_var.get()
+            button.configure(
+                background=selected_bg if is_selected else default_bg,
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
+
+    def populate_version_description_dashboard(self) -> None:
+        self.refresh_description_group_buttons()
+        rows = recent_version_templates(self.version_description_group_var.get(), 3)
+        self.version_description_rows = rows
+        self.version_description_list.delete(0, "end")
+        for row in rows:
+            self.version_description_list.insert("end", f"SW {row['sw_version']} / Algo {row['algo_version']}")
+        if rows:
+            self.version_description_list.selection_set(0)
+            self.show_selected_version_description()
+        else:
+            self.set_version_description_text("No version template saved.")
+
+    def show_selected_version_description(self) -> None:
+        selection = self.version_description_list.curselection()
+        if not selection:
+            self.set_version_description_text("")
+            return
+        row = self.version_description_rows[selection[0]]
+        description = row["description"] or ""
+        text = (
+            f"Group: {row['group_name']}\n"
+            f"SW Version: {row['sw_version']}\n"
+            f"Algo Version: {row['algo_version']}\n"
+            f"Updated: {row['updated_at']}\n"
+            f"Worker: {row['worker']}\n\n"
+            f"{description}"
+        )
+        self.set_version_description_text(text)
+
+    def set_version_description_text(self, value: str) -> None:
+        self.version_description_view.configure(state="normal")
+        self.version_description_view.delete("1.0", "end")
+        self.version_description_view.insert("1.0", value)
+        self.version_description_view.configure(state="disabled")
 
     def load_selected_version_template(self) -> None:
         row = getattr(self, "version_template_rows", {}).get(self.version_template_var.get())
@@ -799,8 +834,8 @@ class VisionIssueApp(tk.Tk):
 
     def refresh_version_history(self) -> None:
         self.populate_version_dashboard()
-        self.populate_version_tree()
         self.refresh_version_templates()
+        self.populate_version_description_dashboard()
 
     def populate_version_dashboard(self) -> None:
         latest = latest_version_by_instrument()
@@ -825,27 +860,6 @@ class VisionIssueApp(tk.Tk):
                 bg = "#ecfdf3" if updated >= recent_threshold else "#ffffff"
                 fg = "#166534" if updated >= recent_threshold else "#111827"
                 card.configure(text=text, bg=bg, fg=fg)
-
-    def populate_version_tree(self) -> None:
-        rows = version_history_rows()
-        for item in self.version_tree.get_children():
-            self.version_tree.delete(item)
-        for row_number, row in enumerate(rows, start=1):
-            self.version_tree.insert(
-                "",
-                "end",
-                iid=str(row["id"]),
-                values=(
-                    row_number,
-                    row["update_time"],
-                    row["group_name"],
-                    row["line"],
-                    row["instrument"],
-                    row["sw_version"],
-                    row["algo_version"],
-                    row["worker"],
-                ),
-            )
 
     def make_issue_tree(self, parent: ttk.Frame) -> ttk.Treeview:
         columns = ("id", "issue_time", "line", "instrument", "category", "subcategory", "title", "status", "worker")
