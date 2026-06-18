@@ -189,10 +189,12 @@ class VisionIssueApp(tk.Tk):
         self.open_tab = ttk.Frame(self.notebook, padding=14)
         self.entry_tab = ttk.Frame(self.notebook, padding=14)
         self.search_tab = ttk.Frame(self.notebook, padding=14)
+        self.version_spacer_tab = ttk.Frame(self.notebook)
         self.version_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.open_tab, text="Open Issues")
         self.notebook.add(self.entry_tab, text="New / Edit Issue")
         self.notebook.add(self.search_tab, text="Search & Excel Report")
+        self.notebook.add(self.version_spacer_tab, text=" " * 34, state="disabled")
         self.notebook.add(self.version_tab, text="Version History")
 
         self.build_open_tab()
@@ -228,6 +230,7 @@ class VisionIssueApp(tk.Tk):
             self.notebook.tab(self.open_tab, text=self.text("Open Issues"))
             self.notebook.tab(self.entry_tab, text=self.text("New / Edit Issue"))
             self.notebook.tab(self.search_tab, text=self.text("Search & Excel Report"))
+            self.notebook.tab(self.version_spacer_tab, text=" " * 34)
             self.notebook.tab(self.version_tab, text=self.text("Version History"))
         for tree_name in ["open_tree", "search_tree"]:
             if hasattr(self, tree_name):
@@ -567,11 +570,23 @@ class VisionIssueApp(tk.Tk):
                 self.version_cards[(line, instrument)] = card
             self.version_dashboard.columnconfigure(column_index, weight=1)
 
-        editor = ttk.Frame(content, style="Panel.TFrame", padding=14)
-        editor.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        editor_panel = ttk.Frame(content, style="Panel.TFrame")
+        editor_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        editor_panel.columnconfigure(0, weight=1)
+        editor_panel.rowconfigure(0, weight=1)
+        editor_canvas = tk.Canvas(editor_panel, background="#ffffff", highlightthickness=0)
+        editor_canvas.grid(row=0, column=0, sticky="nsew")
+        editor_scroll = ttk.Scrollbar(editor_panel, orient="vertical", command=editor_canvas.yview)
+        editor_scroll.grid(row=0, column=1, sticky="ns")
+        editor_canvas.configure(yscrollcommand=editor_scroll.set)
+        editor = ttk.Frame(editor_canvas, style="Panel.TFrame", padding=14)
+        editor_window = editor_canvas.create_window((0, 0), window=editor, anchor="nw")
+        editor.bind("<Configure>", lambda _event: editor_canvas.configure(scrollregion=editor_canvas.bbox("all")))
+        editor_canvas.bind("<Configure>", lambda event: editor_canvas.itemconfigure(editor_window, width=event.width))
+        editor_canvas.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll(int(-event.delta / 60), "units"))
         editor.columnconfigure(1, weight=1)
         editor.columnconfigure(3, weight=1)
-        editor.rowconfigure(8, weight=1)
+        editor.rowconfigure(5, weight=1)
         self.tr_label(editor, "Version Update", style="Subheader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
 
         self.version_group_var = tk.StringVar(value=list(VERSION_GROUPS.keys())[0])
@@ -597,7 +612,7 @@ class VisionIssueApp(tk.Tk):
         ).grid(row=3, column=2, columnspan=2, sticky="w", pady=7)
 
         target_frame = ttk.Frame(editor, style="Panel.TFrame")
-        target_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8, 10))
+        target_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(6, 8))
         self.version_line_buttons: dict[str, tk.Button] = {}
         self.version_instrument_buttons: dict[str, tk.Button] = {}
         self.tr_label(target_frame, "Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
@@ -612,8 +627,9 @@ class VisionIssueApp(tk.Tk):
             self.version_instrument_buttons[instrument] = button
 
         self.tr_label(editor, "Description", style="Panel.TLabel").grid(row=5, column=0, sticky="nw", pady=7)
-        self.version_description_text = tk.Text(editor, height=8, wrap="word", font=("Segoe UI", 10))
+        self.version_description_text = tk.Text(editor, height=5, wrap="word", font=("Segoe UI", 10))
         self.version_description_text.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.version_description_text.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll(int(-event.delta / 60), "units"))
 
         actions = ttk.Frame(editor, style="Panel.TFrame")
         actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
