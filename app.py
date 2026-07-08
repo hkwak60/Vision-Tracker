@@ -780,8 +780,8 @@ class VisionIssueApp(tk.Tk):
         if color:
             canvas.create_oval(2, 2, 8, 8, fill=color, outline=color)
 
-    def normalized_version_key(self, value: str, width: int) -> tuple[int, ...] | None:
-        key = version_sort_key(value)
+    def normalized_version_key(self, value: str, width: int, component: str) -> tuple[int, ...] | None:
+        key = version_sort_key(value, component)
         if key is None:
             return None
         return key + (0,) * max(0, width - len(key))
@@ -793,11 +793,11 @@ class VisionIssueApp(tk.Tk):
             row = rows.get((line, instrument))
             if not row:
                 continue
-            sw_key = version_sort_key(row["sw_version"])
+            sw_key = version_sort_key(row["sw_version"], "sw")
             if sw_key is not None:
                 sw_keys.append(sw_key)
             if instrument_uses_algo(instrument):
-                algo_key = version_sort_key(row["algo_version"])
+                algo_key = version_sort_key(row["algo_version"], "algo")
                 if algo_key is not None:
                     algo_keys.append(algo_key)
 
@@ -1425,8 +1425,8 @@ class VisionIssueApp(tk.Tk):
                     continue
 
                 max_sw, max_algo = latest_keys[instrument]
-                sw_key = self.normalized_version_key(row["sw_version"], len(max_sw or ()))
-                algo_key = self.normalized_version_key(row["algo_version"], len(max_algo or ()))
+                sw_key = self.normalized_version_key(row["sw_version"], len(max_sw or ()), "sw")
+                algo_key = self.normalized_version_key(row["algo_version"], len(max_algo or ()), "algo")
                 sw_outdated = max_sw is not None and sw_key is not None and sw_key < max_sw
                 algo_outdated = (
                     instrument_uses_algo(instrument)

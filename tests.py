@@ -440,7 +440,11 @@ def run_tests() -> None:
         assert "Stored Algo detail." in backdated_history["description"]
 
         assert version_sort_key("260522.1450") == (260522, 1450)
+        assert version_sort_key("260522.1450", "sw") == (260522, 1450)
+        assert version_sort_key("260618.1741", "sw") > version_sort_key("260521.1258", "sw")
         assert version_sort_key("1.2.3.4") == (1, 2, 3, 4)
+        assert version_sort_key("1.5.6.1", "algo") > version_sort_key("1.5.4.9", "algo")
+        assert version_sort_key("1.10.0.0", "algo") > version_sort_key("1.9.9.9", "algo")
         create_version_update(
             VersionInput(
                 update_time="2026-06-17 16:00",

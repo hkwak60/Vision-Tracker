@@ -63,7 +63,38 @@ def version_group_uses_algo(group_name: str) -> bool:
     return any(instrument_uses_algo(instrument) for instrument in VERSION_GROUPS.get(group_name, []))
 
 
-def version_sort_key(value: str) -> tuple[int, ...] | None:
+SW_VERSION_PATTERN = re.compile(r"^\s*(\d{6})\.(\d{4})\s*$")
+ALGO_VERSION_PATTERN = re.compile(r"^\s*(\d+)\.(\d+)\.(\d+)\.(\d+)\s*$")
+
+
+def sw_version_sort_key(value: str) -> tuple[int, int] | None:
+    match = SW_VERSION_PATTERN.match(value or "")
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def algo_version_sort_key(value: str) -> tuple[int, int, int, int] | None:
+    match = ALGO_VERSION_PATTERN.match(value or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def version_sort_key(value: str, component: str | None = None) -> tuple[int, ...] | None:
+    if component == "sw":
+        key = sw_version_sort_key(value)
+        if key is not None:
+            return key
+    elif component == "algo":
+        key = algo_version_sort_key(value)
+        if key is not None:
+            return key
+    else:
+        key = sw_version_sort_key(value) or algo_version_sort_key(value)
+        if key is not None:
+            return key
+
     digits: list[str] = []
     current = ""
     for char in value:
