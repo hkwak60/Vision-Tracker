@@ -31,25 +31,27 @@ from vision_tracker import (
     active_issues,
     create_version_update,
     create_issue,
-    dashboard_counts,
     delete_issue,
-    delete_version_template,
+    delete_version_component_template,
     export_issues_to_excel,
     export_version_dashboard_to_excel,
     format_instruments,
     get_issue,
-    get_version_template,
     initialize_database,
+    instrument_uses_algo,
     issue_time_bounds,
+    latest_dashboard_versions,
     latest_version_by_instrument,
     now_text,
-    recent_version_templates,
     resolve_issue,
     search_issues,
     set_issue_status,
     split_instruments,
     update_issue,
-    update_version_template,
+    update_version_component_template,
+    version_component_templates,
+    version_group_uses_algo,
+    version_sort_key,
 )
 
 
@@ -65,9 +67,8 @@ TRANSLATIONS = {
     "한국어": {
         "Current Worker": "작업자",
         "Language": "언어",
-        "Open Issues": "미해결 이슈",
-        "New / Edit Issue": "이슈 등록 / 수정",
-        "Search & Excel Report": "검색 및 엑셀 보고서",
+        "Issue Board": "이슈 보드",
+        "Search / Report": "검색 / 보고서",
         "Version History": "버전 기록",
         "Action Required": "조치 필요",
         "Monitoring": "모니터링",
@@ -77,6 +78,14 @@ TRANSLATIONS = {
         "Refresh": "새로고침",
         "Edit": "수정",
         "Delete": "삭제",
+        "Create Issue": "이슈 등록",
+        "Edit Issue": "이슈 수정",
+        "Save Changes": "변경 저장",
+        "Cancel": "취소",
+        "Move to Action Required": "조치 필요로 이동",
+        "Move to Monitoring": "모니터링으로 이동",
+        "No Issue Selected": "선택된 이슈 없음",
+        "Select a card to view details, or create a new issue.": "카드를 선택해 상세를 확인하거나 새 이슈를 등록하세요.",
         "Selected Issue": "선택된 이슈",
         "Title": "제목",
         "Status": "상태",
@@ -107,6 +116,9 @@ TRANSLATIONS = {
         "Search": "검색",
         "Excel": "엑셀",
         "Export Dashboard": "대시보드 추출",
+        "SW behind": "SW 낮음",
+        "Algo behind": "Algo 낮음",
+        "Updated 7d": "최근 7일 업데이트",
         "Vision Filter": "비전 필터",
         "Version Dashboard": "버전 대시보드",
         "Version Update": "버전 업데이트",
@@ -120,6 +132,12 @@ TRANSLATIONS = {
         "Delete Version": "버전 삭제",
         "Create Monitoring Issue": "모니터링 이슈 등록",
         "Version Description": "버전 설명",
+        "SW Description": "SW 설명",
+        "Algo Description": "Algo 설명",
+        "Save SW": "SW 저장",
+        "Save Algo": "Algo 저장",
+        "Delete SW": "SW 삭제",
+        "Delete Algo": "Algo 삭제",
         "Group": "그룹",
     }
 }
@@ -135,7 +153,9 @@ class VisionIssueApp(tk.Tk):
         self.selected_issue_id: int | None = None
         self.loaded_issue_worker = ""
         self.search_rows = []
+        self.active_issue_rows = []
         self.language_var = tk.StringVar(value="한국어")
+        self.current_worker_var = tk.StringVar(value=WORKERS[0])
         self.translated_widgets: list[tuple[tk.Widget, str, str]] = []
 
         self.configure(bg="#f4f6f8")
@@ -144,6 +164,7 @@ class VisionIssueApp(tk.Tk):
         self.configure_styles()
 
         self.build_layout()
+        self.initialize_issue_form_state()
         self.refresh_open_issues()
         self.search_records()
 
@@ -165,6 +186,23 @@ class VisionIssueApp(tk.Tk):
         self.style.configure("CardTitle.TLabel", background="#ffffff", font=("Segoe UI", 9))
         self.style.configure("CardValue.TLabel", background="#ffffff", font=("Segoe UI", 20, "bold"))
 
+    def initialize_issue_form_state(self) -> None:
+        self.issue_date_var = tk.StringVar()
+        self.issue_hour_var = tk.StringVar()
+        self.issue_minute_var = tk.StringVar()
+        self.resolved_time_var = tk.StringVar(value="00:00")
+        self.line_var = tk.StringVar(value=LINES[0])
+        self.instrument_var = tk.StringVar(value=INSTRUMENTS[0])
+        self.selected_instruments = {INSTRUMENTS[0]}
+        self.category_var = tk.StringVar(value=CATEGORIES[0])
+        self.subcategory_var = tk.StringVar(value=CATEGORY_MAP[CATEGORIES[0]][0])
+        self.status_var = tk.StringVar(value=ACTIVE_STATUS_OPTIONS[0])
+        self.title_var = tk.StringVar()
+        self.form_description_value = ""
+        self.form_resolution_value = ""
+        self.line_instrument_traces_added = False
+        self.set_issue_datetime(now_text())
+
     def build_layout(self) -> None:
         header = ttk.Frame(self, padding=(18, 14, 18, 8))
         header.pack(fill="x")
@@ -181,32 +219,20 @@ class VisionIssueApp(tk.Tk):
         )
         language_combo.pack(side="left", padx=(0, 18))
         language_combo.bind("<<ComboboxSelected>>", self.apply_language)
-        self.tr_label(profile, "Current Worker").pack(side="left", padx=(0, 8))
-        self.current_worker_var = tk.StringVar(value=WORKERS[0])
-        ttk.Combobox(
-            profile,
-            textvariable=self.current_worker_var,
-            values=WORKERS,
-            state="readonly",
-            width=20,
-        ).pack(side="left")
 
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=18, pady=(0, 18))
 
         self.open_tab = ttk.Frame(self.notebook, padding=14)
-        self.entry_tab = ttk.Frame(self.notebook, padding=14)
         self.search_tab = ttk.Frame(self.notebook, padding=14)
         self.version_spacer_tab = ttk.Frame(self.notebook)
         self.version_tab = ttk.Frame(self.notebook, padding=14)
-        self.notebook.add(self.open_tab, text="Open Issues")
-        self.notebook.add(self.entry_tab, text="New / Edit Issue")
-        self.notebook.add(self.search_tab, text="Search & Excel Report")
+        self.notebook.add(self.open_tab, text="Issue Board")
+        self.notebook.add(self.search_tab, text="Search / Report")
         self.notebook.add(self.version_spacer_tab, text=VERSION_TAB_SPACER, state="disabled")
         self.notebook.add(self.version_tab, text="Version History")
 
         self.build_open_tab()
-        self.build_entry_tab()
         self.build_search_tab()
         self.build_version_tab()
         self.apply_language()
@@ -231,16 +257,23 @@ class VisionIssueApp(tk.Tk):
         return button
 
     def apply_language(self, _event: tk.Event | None = None) -> None:
+        active_widgets: list[tuple[tk.Widget, str, str]] = []
         for widget, key, option in self.translated_widgets:
-            prefix = getattr(widget, "translation_prefix", "")
-            widget.configure(**{option: f"{prefix}{self.text(key)}"})
+            try:
+                if not widget.winfo_exists():
+                    continue
+                prefix = getattr(widget, "translation_prefix", "")
+                widget.configure(**{option: f"{prefix}{self.text(key)}"})
+                active_widgets.append((widget, key, option))
+            except tk.TclError:
+                continue
+        self.translated_widgets = active_widgets
         if hasattr(self, "notebook"):
-            self.notebook.tab(self.open_tab, text=self.text("Open Issues"))
-            self.notebook.tab(self.entry_tab, text=self.text("New / Edit Issue"))
-            self.notebook.tab(self.search_tab, text=self.text("Search & Excel Report"))
+            self.notebook.tab(self.open_tab, text=self.text("Issue Board"))
+            self.notebook.tab(self.search_tab, text=self.text("Search / Report"))
             self.notebook.tab(self.version_spacer_tab, text=VERSION_TAB_SPACER)
             self.notebook.tab(self.version_tab, text=self.text("Version History"))
-        for tree_name in ["open_tree", "search_tree"]:
+        for tree_name in ["search_tree"]:
             if hasattr(self, tree_name):
                 self.update_tree_headings(getattr(self, tree_name))
         if hasattr(self, "version_create_issue_button"):
@@ -262,156 +295,282 @@ class VisionIssueApp(tk.Tk):
             tree.heading(column, text=self.text(key))
 
     def build_open_tab(self) -> None:
-        self.dashboard_frame = ttk.Frame(self.open_tab)
-        self.dashboard_frame.pack(fill="x", pady=(0, 12))
-        self.dashboard_vars: dict[str, tk.StringVar] = {}
-        for title in ["Action Required", "Monitoring", "Resolved Today", "Active"]:
-            self.add_dashboard_card(self.dashboard_frame, title)
-
         toolbar = ttk.Frame(self.open_tab)
         toolbar.pack(fill="x", pady=(0, 10))
         self.tr_button(toolbar, "Refresh", self.refresh_open_issues, prefix="↻ ").pack(side="left")
-        self.tr_button(toolbar, "Edit", self.load_selected_open_issue, prefix="✎ ").pack(side="left", padx=8)
-        self.tr_button(toolbar, "Resolved", self.resolve_selected_open_issue, prefix="✓ ").pack(side="left")
-        self.tr_button(toolbar, "Delete", lambda: self.delete_selected_issue(self.open_tree), prefix="✕ ").pack(side="left", padx=8)
+        self.tr_button(toolbar, "Create Issue", self.show_create_issue_form, prefix="+ ", style="Accent.TButton").pack(side="right")
 
         content = ttk.Frame(self.open_tab)
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=3)
-        content.columnconfigure(1, weight=1)
+        content.columnconfigure(1, weight=2)
         content.rowconfigure(0, weight=1)
 
-        open_table = ttk.Frame(content)
-        open_table.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        open_table.columnconfigure(0, weight=1)
-        open_table.rowconfigure(0, weight=1)
-        self.open_tree = self.make_issue_tree(open_table)
-        self.open_tree.grid(row=0, column=0, sticky="nsew")
-        open_scroll = ttk.Scrollbar(open_table, orient="vertical", command=self.open_tree.yview)
-        open_scroll.grid(row=0, column=1, sticky="ns")
-        self.open_tree.configure(yscrollcommand=open_scroll.set)
-        self.open_tree.bind("<Double-1>", lambda _event: self.load_selected_open_issue())
-        self.open_tree.bind("<<TreeviewSelect>>", lambda _event: self.update_detail_panel(self.open_tree))
+        board = ttk.Frame(content)
+        board.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        board.columnconfigure(0, weight=1)
+        board.columnconfigure(1, weight=1)
+        board.rowconfigure(0, weight=1)
 
-        detail_panel = ttk.Frame(content, style="Panel.TFrame")
-        detail_panel.grid(row=0, column=1, sticky="nsew")
-        detail_panel.columnconfigure(0, weight=1)
-        detail_panel.rowconfigure(0, weight=1)
-        detail_canvas = tk.Canvas(detail_panel, background="#ffffff", highlightthickness=0)
-        detail_canvas.grid(row=0, column=0, sticky="nsew")
-        detail_scroll = ttk.Scrollbar(detail_panel, orient="vertical", command=detail_canvas.yview)
-        detail_scroll.grid(row=0, column=1, sticky="ns")
-        detail_canvas.configure(yscrollcommand=detail_scroll.set)
-        self.detail_frame = ttk.Frame(detail_canvas, style="Panel.TFrame", padding=14)
-        detail_window = detail_canvas.create_window((0, 0), window=self.detail_frame, anchor="nw")
-        self.detail_frame.bind("<Configure>", lambda _event: detail_canvas.configure(scrollregion=detail_canvas.bbox("all")))
-        detail_canvas.bind("<Configure>", lambda event: detail_canvas.itemconfigure(detail_window, width=event.width))
-        detail_canvas.bind("<MouseWheel>", lambda event: detail_canvas.yview_scroll(int(-event.delta / 60), "units"))
+        self.board_columns: dict[str, ttk.Frame] = {}
+        self.board_column_canvases: dict[str, tk.Canvas] = {}
+        self.board_count_vars: dict[str, tk.StringVar] = {}
+        self.issue_card_widgets: dict[int, tuple[tk.Frame, list[tk.Widget]]] = {}
+        for column_index, status in enumerate(ACTIVE_STATUS_OPTIONS):
+            column = ttk.Frame(board, style="Panel.TFrame", padding=10)
+            column.grid(row=0, column=column_index, sticky="nsew", padx=(0, 10) if column_index == 0 else (0, 0))
+            column.columnconfigure(0, weight=1)
+            column.rowconfigure(1, weight=1)
 
-        self.detail_frame.columnconfigure(0, weight=1)
-        self.tr_label(self.detail_frame, "Selected Issue", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 10))
-        self.detail_vars = {
-            "Title": tk.StringVar(value="-"),
-            "Status": tk.StringVar(value="-"),
-            "Line / Instrument": tk.StringVar(value="-"),
-            "Category": tk.StringVar(value="-"),
-            "Issue Time": tk.StringVar(value="-"),
-            "Logged By": tk.StringVar(value="-"),
-            "Downtime Duration": tk.StringVar(value="-"),
-        }
-        for row_index, (label, variable) in enumerate(self.detail_vars.items(), start=1):
-            self.tr_label(self.detail_frame, label, style="Panel.TLabel").grid(row=row_index * 2 - 1, column=0, sticky="w", pady=(7, 0))
-            ttk.Label(self.detail_frame, textvariable=variable, style="Panel.TLabel", wraplength=260).grid(row=row_index * 2, column=0, sticky="w")
+            header = ttk.Frame(column, style="Panel.TFrame")
+            header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+            self.tr_label(header, status, style="Subheader.TLabel").pack(side="left")
+            count_var = tk.StringVar(value="0")
+            ttk.Label(header, textvariable=count_var, style="Panel.TLabel").pack(side="right")
+            self.board_count_vars[status] = count_var
 
-        self.tr_label(self.detail_frame, "Description", style="Panel.TLabel").grid(row=16, column=0, sticky="w", pady=(14, 0))
-        self.detail_description = tk.Text(self.detail_frame, height=12, wrap="word", font=("Segoe UI", 9), state="disabled")
-        self.detail_description.grid(row=17, column=0, sticky="nsew", pady=(3, 0))
-        self.detail_description.bind("<MouseWheel>", lambda event: detail_canvas.yview_scroll(int(-event.delta / 60), "units"))
+            canvas = tk.Canvas(column, background="#ffffff", highlightthickness=0)
+            canvas.grid(row=1, column=0, sticky="nsew")
+            scrollbar = ttk.Scrollbar(column, orient="vertical", command=canvas.yview)
+            scrollbar.grid(row=1, column=1, sticky="ns")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            card_frame = ttk.Frame(canvas, style="Panel.TFrame")
+            window = canvas.create_window((0, 0), window=card_frame, anchor="nw")
+            card_frame.bind("<Configure>", lambda _event, target=canvas: target.configure(scrollregion=target.bbox("all")))
+            canvas.bind("<Configure>", lambda event, target=canvas, item=window: target.itemconfigure(item, width=event.width))
+            canvas.bind("<MouseWheel>", lambda event, target=canvas: target.yview_scroll(int(-event.delta / 60), "units"))
+            self.board_columns[status] = card_frame
+            self.board_column_canvases[status] = canvas
 
-    def add_dashboard_card(self, parent: ttk.Frame, title: str) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=12)
-        card.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        value = tk.StringVar(value="0")
-        self.dashboard_vars[title] = value
-        self.tr_label(card, title, style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Label(card, textvariable=value, style="CardValue.TLabel").pack(anchor="w", pady=(4, 0))
+        side_panel = ttk.Frame(content, style="Panel.TFrame")
+        side_panel.grid(row=0, column=1, sticky="nsew")
+        side_panel.columnconfigure(0, weight=1)
+        side_panel.rowconfigure(0, weight=1)
+        self.board_side_canvas = tk.Canvas(side_panel, background="#ffffff", highlightthickness=0)
+        self.board_side_canvas.grid(row=0, column=0, sticky="nsew")
+        side_scroll = ttk.Scrollbar(side_panel, orient="vertical", command=self.board_side_canvas.yview)
+        side_scroll.grid(row=0, column=1, sticky="ns")
+        self.board_side_canvas.configure(yscrollcommand=side_scroll.set)
+        self.board_side_frame = ttk.Frame(self.board_side_canvas, style="Panel.TFrame", padding=14)
+        side_window = self.board_side_canvas.create_window((0, 0), window=self.board_side_frame, anchor="nw")
+        self.board_side_frame.bind(
+            "<Configure>",
+            lambda _event: self.board_side_canvas.configure(scrollregion=self.board_side_canvas.bbox("all")),
+        )
+        self.board_side_canvas.bind(
+            "<Configure>",
+            lambda event: self.board_side_canvas.itemconfigure(side_window, width=event.width),
+        )
+        self.board_side_canvas.bind(
+            "<MouseWheel>",
+            lambda event: self.board_side_canvas.yview_scroll(int(-event.delta / 60), "units"),
+        )
+        self.show_empty_issue_detail()
 
-    def build_entry_tab(self) -> None:
-        panel = ttk.Frame(self.entry_tab, style="Panel.TFrame", padding=18)
-        panel.pack(fill="both", expand=True)
+    def bind_mousewheel_recursive(self, widget: tk.Widget, canvas: tk.Canvas) -> None:
+        def on_mousewheel(event: tk.Event) -> str:
+            canvas.yview_scroll(int(-event.delta / 60), "units")
+            return "break"
+
+        widget.bind("<MouseWheel>", on_mousewheel)
+        for child in widget.winfo_children():
+            self.bind_mousewheel_recursive(child, canvas)
+
+    def clear_board_side_panel(self) -> None:
+        for child in self.board_side_frame.winfo_children():
+            child.destroy()
+        self.board_side_canvas.yview_moveto(0)
+
+    def show_empty_issue_detail(self) -> None:
+        self.clear_board_side_panel()
+        self.selected_issue_id = None
+        self.tr_label(self.board_side_frame, "No Issue Selected", style="Subheader.TLabel").pack(anchor="w", pady=(0, 10))
+        ttk.Label(
+            self.board_side_frame,
+            text=self.text("Select a card to view details, or create a new issue."),
+            style="Panel.TLabel",
+            wraplength=420,
+            justify="left",
+        ).pack(anchor="w", fill="x")
+        self.bind_mousewheel_recursive(self.board_side_frame, self.board_side_canvas)
+        self.refresh_board_card_styles()
+
+    def show_issue_detail(self, issue_id: int) -> None:
+        row = get_issue(issue_id)
+        if row is None:
+            messagebox.showerror(APP_TITLE, "Issue was not found.")
+            self.show_empty_issue_detail()
+            return
+        self.selected_issue_id = issue_id
+        self.clear_board_side_panel()
+        self.board_side_frame.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(self.board_side_frame, style="Panel.TFrame")
+        header.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            header,
+            text=row["title"] or "-",
+            style="Subheader.TLabel",
+            wraplength=420,
+            justify="left",
+        ).pack(side="left", fill="x", expand=True, anchor="w")
+
+        status_bg, status_fg = STATUS_TAGS.get(row["status"], ("#eef2ff", "#312e81"))
+        tk.Label(
+            header,
+            text=self.text(row["status"]),
+            bg=status_bg,
+            fg=status_fg,
+            padx=8,
+            pady=3,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="right", padx=(8, 0))
+
+        category_text = row["category"]
+        if row["subcategory"]:
+            category_text = f"{category_text} / {row['subcategory']}"
+        detail_rows = [
+            ("Line / Instrument", f"{row['line']} / {row['instrument']}"),
+            ("Category", category_text),
+            ("Issue Time", row["issue_time"] or "-"),
+            ("Downtime Duration", row["resolved_time"] or "-"),
+            ("Logged By", row["worker"] or "-"),
+        ]
+        for label, value in detail_rows:
+            self.add_detail_row(self.board_side_frame, label, value)
+
+        self.tr_label(self.board_side_frame, "Description", style="Panel.TLabel").pack(anchor="w", pady=(14, 2))
+        description = tk.Text(self.board_side_frame, height=8, wrap="word", font=("Segoe UI", 9), relief="solid", bd=1)
+        description.pack(fill="x")
+        description.insert("1.0", row["description"] or "")
+        description.configure(state="disabled")
+
+        self.tr_label(self.board_side_frame, "Resolution Notes", style="Panel.TLabel").pack(anchor="w", pady=(14, 2))
+        resolution = tk.Text(self.board_side_frame, height=5, wrap="word", font=("Segoe UI", 9), relief="solid", bd=1)
+        resolution.pack(fill="x")
+        resolution.insert("1.0", row["resolution_notes"] or "")
+        resolution.configure(state="disabled")
+
+        actions = ttk.Frame(self.board_side_frame, style="Panel.TFrame")
+        actions.pack(fill="x", pady=(14, 0))
+        self.tr_button(actions, "Edit", lambda issue=issue_id: self.show_edit_issue_form(issue), prefix="✎ ").pack(fill="x", pady=(0, 6))
+        if row["status"] == "Action Required":
+            self.tr_button(
+                actions,
+                "Move to Monitoring",
+                lambda issue=issue_id: self.move_issue_status(issue, "Monitoring"),
+                prefix="→ ",
+            ).pack(fill="x", pady=(0, 6))
+        elif row["status"] == "Monitoring":
+            self.tr_button(
+                actions,
+                "Move to Action Required",
+                lambda issue=issue_id: self.move_issue_status(issue, "Action Required"),
+                prefix="→ ",
+            ).pack(fill="x", pady=(0, 6))
+        self.tr_button(actions, "Resolved", lambda issue=issue_id: self.resolve_issue_from_board(issue), prefix="✓ ").pack(fill="x", pady=(0, 6))
+        self.tr_button(actions, "Delete", lambda issue=issue_id: self.delete_issue_by_id(issue), prefix="✕ ").pack(fill="x")
+
+        self.bind_mousewheel_recursive(self.board_side_frame, self.board_side_canvas)
+        self.refresh_board_card_styles()
+
+    def add_detail_row(self, parent: ttk.Frame, label: str, value: str) -> None:
+        self.tr_label(parent, label, style="Panel.TLabel").pack(anchor="w", pady=(8, 0))
+        ttk.Label(parent, text=value or "-", style="Panel.TLabel", wraplength=420, justify="left").pack(anchor="w", fill="x")
+
+    def show_create_issue_form(self) -> None:
+        self.clear_form()
+        self.render_issue_form("create")
+
+    def show_edit_issue_form(self, issue_id: int | None = None) -> None:
+        issue_id = issue_id or self.selected_issue_id
+        if issue_id is None:
+            messagebox.showwarning(APP_TITLE, "Select an issue first.")
+            return
+        if not self.load_issue_state(issue_id):
+            return
+        self.render_issue_form("edit")
+
+    def render_issue_form(self, mode: str) -> None:
+        self.clear_board_side_panel()
+        form_title = "Create Issue" if mode == "create" else "Edit Issue"
+        save_title = "Create Issue" if mode == "create" else "Save Changes"
+        panel = self.board_side_frame
         panel.columnconfigure(1, weight=1)
-        panel.columnconfigure(3, weight=1)
-        panel.rowconfigure(8, weight=1)
-
-        self.tr_label(panel, "Issue Record", style="Subheader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
-
-        self.issue_date_var = tk.StringVar()
-        self.issue_hour_var = tk.StringVar()
-        self.issue_minute_var = tk.StringVar()
-        self.resolved_time_var = tk.StringVar(value="00:00")
-        self.line_var = tk.StringVar(value=LINES[0])
-        self.instrument_var = tk.StringVar(value=INSTRUMENTS[0])
-        self.selected_instruments = {INSTRUMENTS[0]}
-        self.category_var = tk.StringVar(value=CATEGORIES[0])
-        self.subcategory_var = tk.StringVar(value=CATEGORY_MAP[CATEGORIES[0]][0])
-        self.status_var = tk.StringVar(value=STATUS_OPTIONS[0])
-        self.title_var = tk.StringVar()
-        self.set_issue_datetime(now_text())
+        self.tr_label(panel, form_title, style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 12))
 
         self.add_line_instrument_grid(panel, 1)
         self.add_datetime_picker(panel, "Issue Time", 2, 0)
-        category_combo = self.add_labeled_combo(panel, "Category", self.category_var, CATEGORIES, 2, 2)
+        self.add_labeled_combo(panel, "Logged By", self.current_worker_var, WORKERS, 3, 0)
+        category_combo = self.add_labeled_combo(panel, "Category", self.category_var, CATEGORIES, 4, 0)
         category_combo.bind("<<ComboboxSelected>>", lambda _event: self.update_subcategories())
-        self.subcategory_combo = self.add_labeled_combo(panel, "Subcategory", self.subcategory_var, CATEGORY_MAP[self.category_var.get()], 3, 0)
-        self.add_labeled_combo(panel, "Status", self.status_var, STATUS_OPTIONS, 3, 2)
-        self.add_labeled_entry(panel, "Downtime Duration", self.resolved_time_var, 4, 0)
-        self.add_labeled_entry(panel, "Title", self.title_var, 5, 0, columnspan=3)
+        self.subcategory_combo = self.add_labeled_combo(panel, "Subcategory", self.subcategory_var, CATEGORY_MAP[self.category_var.get()], 5, 0)
+        self.add_labeled_combo(panel, "Status", self.status_var, STATUS_OPTIONS, 6, 0)
+        self.add_labeled_entry(panel, "Downtime Duration", self.resolved_time_var, 7, 0)
+        self.add_labeled_entry(panel, "Title", self.title_var, 8, 0)
 
-        self.tr_label(panel, "Description", style="Panel.TLabel").grid(row=6, column=0, sticky="nw", pady=7)
+        self.tr_label(panel, "Description", style="Panel.TLabel").grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 2))
         self.description_text = tk.Text(panel, height=7, wrap="word", font=("Segoe UI", 10))
-        self.description_text.grid(row=6, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.description_text.grid(row=10, column=0, columnspan=2, sticky="nsew")
+        self.description_text.insert("1.0", self.form_description_value)
 
-        self.tr_label(panel, "Resolution Notes", style="Panel.TLabel").grid(row=7, column=0, sticky="nw", pady=7)
+        self.tr_label(panel, "Resolution Notes", style="Panel.TLabel").grid(row=11, column=0, columnspan=2, sticky="w", pady=(10, 2))
         self.resolution_text = tk.Text(panel, height=5, wrap="word", font=("Segoe UI", 10))
-        self.resolution_text.grid(row=7, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.resolution_text.grid(row=12, column=0, columnspan=2, sticky="nsew")
+        self.resolution_text.insert("1.0", self.form_resolution_value)
 
         actions = ttk.Frame(panel, style="Panel.TFrame")
-        actions.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(14, 0))
-        self.tr_button(actions, "New", self.clear_form, prefix="+ ").pack(side="left")
-        self.tr_button(actions, "Delete", self.delete_loaded_issue, prefix="✕ ").pack(side="left", padx=8)
-        self.tr_button(actions, "Save", self.save_issue, prefix="✓ ", style="Accent.TButton").pack(side="right")
+        actions.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        self.tr_button(actions, "Cancel", self.cancel_issue_form).pack(side="left")
+        self.tr_button(actions, save_title, self.save_issue, prefix="✓ ", style="Accent.TButton").pack(side="right")
+        self.bind_mousewheel_recursive(self.board_side_frame, self.board_side_canvas)
+
+    def cancel_issue_form(self) -> None:
+        if self.selected_issue_id is None:
+            self.show_empty_issue_detail()
+        else:
+            self.show_issue_detail(self.selected_issue_id)
 
     def add_line_instrument_grid(self, parent: ttk.Frame, row: int) -> None:
         grid = ttk.Frame(parent, style="Panel.TFrame")
-        grid.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+        grid.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        grid.columnconfigure(0, weight=1)
         self.line_buttons: dict[str, tk.Button] = {}
         self.instrument_buttons: dict[str, tk.Button] = {}
-        self.tr_label(grid, "Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
-        for column_index, line in enumerate(LINES, start=1):
+
+        self.tr_label(grid, "Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 3))
+        line_frame = ttk.Frame(grid, style="Panel.TFrame")
+        line_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        for column_index, line in enumerate(LINES):
             button = tk.Button(
-                grid,
+                line_frame,
                 text=line,
-                width=10,
+                width=8,
                 relief="raised",
                 command=lambda selected_line=line: self.select_line(selected_line),
             )
-            button.grid(
-                row=0, column=column_index, padx=2, pady=3
-            )
+            button.grid(row=0, column=column_index, sticky="ew", padx=2, pady=3)
+            line_frame.columnconfigure(column_index, weight=1)
             self.line_buttons[line] = button
-        self.tr_label(grid, "Vision", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
-        for column_index, instrument in enumerate(INSTRUMENTS, start=1):
+
+        self.tr_label(grid, "Vision", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 3))
+        vision_frame = ttk.Frame(grid, style="Panel.TFrame")
+        vision_frame.grid(row=3, column=0, sticky="ew")
+        for index, instrument in enumerate(INSTRUMENTS):
             button = tk.Button(
-                grid,
+                vision_frame,
                 text=instrument,
-                width=14,
+                width=13,
                 relief="raised",
                 command=lambda selected_instrument=instrument: self.select_instrument(selected_instrument),
             )
-            button.grid(row=1, column=column_index, padx=2, pady=3)
+            button.grid(row=index // 2, column=index % 2, sticky="ew", padx=2, pady=3)
+            vision_frame.columnconfigure(index % 2, weight=1)
             self.instrument_buttons[instrument] = button
-        self.line_var.trace_add("write", lambda *_args: self.refresh_line_instrument_buttons())
-        self.instrument_var.trace_add("write", lambda *_args: self.refresh_line_instrument_buttons())
+        if not getattr(self, "line_instrument_traces_added", False):
+            self.line_var.trace_add("write", lambda *_args: self.refresh_line_instrument_buttons())
+            self.instrument_var.trace_add("write", lambda *_args: self.refresh_line_instrument_buttons())
+            self.line_instrument_traces_added = True
         self.refresh_line_instrument_buttons()
 
     def select_line(self, line: str) -> None:
@@ -537,14 +696,122 @@ class VisionIssueApp(tk.Tk):
         self.search_tree.grid(row=0, column=0, sticky="nsew")
         search_scroll = ttk.Scrollbar(search_table, orient="vertical", command=self.search_tree.yview)
         search_scroll.grid(row=0, column=1, sticky="ns")
-        self.search_tree.configure(yscrollcommand=search_scroll.set)
+        search_xscroll = ttk.Scrollbar(search_table, orient="horizontal", command=self.search_tree.xview)
+        search_xscroll.grid(row=1, column=0, sticky="ew")
+        self.search_tree.configure(yscrollcommand=search_scroll.set, xscrollcommand=search_xscroll.set)
         self.search_tree.bind("<Double-1>", lambda _event: self.load_selected_search_issue())
+
+    def add_version_legend_item(self, parent: ttk.Frame, color: str, label_key: str) -> None:
+        dot = tk.Canvas(parent, width=10, height=10, bg="#ffffff", highlightthickness=0)
+        dot.create_oval(2, 2, 8, 8, fill=color, outline=color)
+        dot.pack(side="left", padx=(10, 4))
+        self.tr_label(parent, label_key, style="Panel.TLabel").pack(side="left")
+
+    def create_version_dashboard_cell(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        column: int,
+        line: str,
+        instrument: str,
+    ) -> dict[str, tk.Widget]:
+        shell = tk.Frame(parent, bg="#d8dee8", padx=1, pady=1)
+        shell.grid(row=row, column=column, sticky="nsew", padx=2, pady=2)
+        shell.columnconfigure(0, weight=1)
+
+        cell = tk.Frame(shell, bg="#ffffff")
+        cell.pack(fill="both", expand=True)
+        recent_bar = tk.Frame(cell, width=3, bg="#ffffff")
+        recent_bar.pack(side="left", fill="y")
+        body = tk.Frame(cell, bg="#ffffff", padx=5, pady=4)
+        body.pack(side="left", fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+
+        sw_label = tk.Label(
+            body,
+            text="-",
+            bg="#ffffff",
+            fg="#111827",
+            font=("Segoe UI", 8),
+            anchor="w",
+        )
+        sw_label.grid(row=0, column=0, sticky="ew")
+        sw_dot = tk.Canvas(body, width=9, height=9, bg="#ffffff", highlightthickness=0)
+        sw_dot.grid(row=0, column=1, sticky="e", padx=(4, 0))
+
+        algo_label = tk.Label(
+            body,
+            text="",
+            bg="#ffffff",
+            fg="#111827",
+            font=("Segoe UI", 8),
+            anchor="w",
+        )
+        algo_label.grid(row=1, column=0, sticky="ew", pady=(1, 0))
+        algo_dot = tk.Canvas(body, width=9, height=9, bg="#ffffff", highlightthickness=0)
+        algo_dot.grid(row=1, column=1, sticky="e", padx=(4, 0), pady=(1, 0))
+
+        widgets: dict[str, tk.Widget] = {
+            "shell": shell,
+            "cell": cell,
+            "recent_bar": recent_bar,
+            "body": body,
+            "sw_label": sw_label,
+            "sw_dot": sw_dot,
+            "algo_label": algo_label,
+            "algo_dot": algo_dot,
+        }
+        self.bind_version_cell_click(widgets, line, instrument)
+        return widgets
+
+    def bind_version_cell_click(self, widgets: dict[str, tk.Widget], line: str, instrument: str) -> None:
+        for widget in widgets.values():
+            widget.bind(
+                "<Button-1>",
+                lambda _event, selected_line=line, selected_instrument=instrument: self.select_version_target(
+                    selected_line,
+                    selected_instrument,
+                ),
+            )
+
+    def draw_status_dot(self, canvas: tk.Canvas, color: str | None) -> None:
+        canvas.delete("all")
+        canvas.configure(bg="#ffffff")
+        if color:
+            canvas.create_oval(2, 2, 8, 8, fill=color, outline=color)
+
+    def normalized_version_key(self, value: str, width: int) -> tuple[int, ...] | None:
+        key = version_sort_key(value)
+        if key is None:
+            return None
+        return key + (0,) * max(0, width - len(key))
+
+    def latest_current_version_keys(self, rows: dict[tuple[str, str], object], instrument: str) -> tuple[tuple[int, ...] | None, tuple[int, ...] | None]:
+        sw_keys = []
+        algo_keys = []
+        for line in LINES:
+            row = rows.get((line, instrument))
+            if not row:
+                continue
+            sw_key = version_sort_key(row["sw_version"])
+            if sw_key is not None:
+                sw_keys.append(sw_key)
+            if instrument_uses_algo(instrument):
+                algo_key = version_sort_key(row["algo_version"])
+                if algo_key is not None:
+                    algo_keys.append(algo_key)
+
+        sw_width = max((len(key) for key in sw_keys), default=0)
+        algo_width = max((len(key) for key in algo_keys), default=0)
+        max_sw = max((key + (0,) * (sw_width - len(key)) for key in sw_keys), default=None)
+        max_algo = max((key + (0,) * (algo_width - len(key)) for key in algo_keys), default=None)
+        return max_sw, max_algo
 
     def build_version_tab(self) -> None:
         content = ttk.Frame(self.version_tab)
         content.pack(fill="both", expand=True)
-        content.columnconfigure(0, weight=5)
-        content.columnconfigure(1, weight=1)
+        content.columnconfigure(0, weight=3)
+        content.columnconfigure(1, weight=2)
         content.rowconfigure(1, weight=1)
 
         dashboard_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
@@ -553,33 +820,44 @@ class VisionIssueApp(tk.Tk):
         dashboard_header.pack(fill="x", pady=(0, 8))
         self.tr_label(dashboard_header, "Version Dashboard", style="Subheader.TLabel").pack(side="left")
         self.tr_button(dashboard_header, "Export Dashboard", self.export_version_dashboard, prefix="⇩ ").pack(side="right")
+        self.tr_button(dashboard_header, "Refresh", self.refresh_version_history, prefix="? ", width=10).pack(side="right", padx=(0, 6))
+
+        legend = ttk.Frame(dashboard_header, style="Panel.TFrame")
+        legend.pack(side="right", padx=(0, 14))
+        self.add_version_legend_item(legend, "#f59e0b", "SW behind")
+        self.add_version_legend_item(legend, "#2563eb", "Algo behind")
+        tk.Frame(legend, width=16, height=4, bg="#22c55e").pack(side="left", padx=(10, 4))
+        self.tr_label(legend, "Updated 7d", style="Panel.TLabel").pack(side="left")
+
         self.version_dashboard = ttk.Frame(dashboard_panel, style="Panel.TFrame")
         self.version_dashboard.pack(fill="x")
-        self.version_cards: dict[tuple[str, str], tk.Label] = {}
-        for column_index, instrument in enumerate(INSTRUMENTS):
-            section = ttk.Frame(self.version_dashboard, style="Panel.TFrame", padding=6)
-            section.grid(row=0, column=column_index, sticky="nsew", padx=(0, 6))
-            ttk.Label(section, text=instrument, style="Subheader.TLabel", anchor="center").pack(fill="x")
-            for line in LINES:
-                card = tk.Label(
-                    section,
-                    text=f"{line}\nNo Version",
-                    justify="left",
-                    anchor="nw",
-                    width=17,
-                    height=5,
-                    bg="#ffffff",
-                    fg="#111827",
-                    relief="solid",
-                    bd=1,
-                    padx=6,
-                    pady=5,
-                    font=("Segoe UI", 8),
+        self.version_cells: dict[tuple[str, str], dict[str, tk.Widget]] = {}
+        ttk.Label(self.version_dashboard, text="", style="Panel.TLabel", width=7).grid(row=0, column=0, sticky="nsew")
+        for column_index, instrument in enumerate(INSTRUMENTS, start=1):
+            ttk.Label(
+                self.version_dashboard,
+                text=instrument,
+                style="Panel.TLabel",
+                anchor="center",
+                font=("Segoe UI", 8, "bold"),
+            ).grid(row=0, column=column_index, sticky="ew", padx=2, pady=(0, 4))
+            self.version_dashboard.columnconfigure(column_index, weight=1, uniform="vision_version")
+        for row_index, line in enumerate(LINES, start=1):
+            ttk.Label(
+                self.version_dashboard,
+                text=line,
+                style="Panel.TLabel",
+                anchor="center",
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=row_index, column=0, sticky="nsew", padx=(0, 4), pady=2)
+            for column_index, instrument in enumerate(INSTRUMENTS, start=1):
+                self.version_cells[(line, instrument)] = self.create_version_dashboard_cell(
+                    self.version_dashboard,
+                    row_index,
+                    column_index,
+                    line,
+                    instrument,
                 )
-                card.pack(fill="x", pady=(6, 0))
-                card.bind("<Button-1>", lambda _event, selected_line=line, selected_instrument=instrument: self.select_version_target(selected_line, selected_instrument))
-                self.version_cards[(line, instrument)] = card
-            self.version_dashboard.columnconfigure(column_index, weight=1)
 
         editor_panel = ttk.Frame(content, style="Panel.TFrame")
         editor_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
@@ -587,9 +865,6 @@ class VisionIssueApp(tk.Tk):
         editor_panel.rowconfigure(0, weight=1)
         editor_canvas = tk.Canvas(editor_panel, background="#ffffff", highlightthickness=0)
         editor_canvas.grid(row=0, column=0, sticky="nsew")
-        editor_scroll = ttk.Scrollbar(editor_panel, orient="vertical", command=editor_canvas.yview)
-        editor_scroll.grid(row=0, column=1, sticky="ns")
-        editor_canvas.configure(yscrollcommand=editor_scroll.set)
         editor = ttk.Frame(editor_canvas, style="Panel.TFrame", padding=14)
         editor_window = editor_canvas.create_window((0, 0), window=editor, anchor="nw")
         editor.bind("<Configure>", lambda _event: editor_canvas.configure(scrollregion=editor_canvas.bbox("all")))
@@ -601,7 +876,6 @@ class VisionIssueApp(tk.Tk):
         self.tr_label(editor, "Version Update", style="Subheader.TLabel").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
 
         self.version_group_var = tk.StringVar(value=list(VERSION_GROUPS.keys())[0])
-        self.version_template_var = tk.StringVar()
         self.version_update_time_var = tk.StringVar(value=now_text())
         self.version_sw_var = tk.StringVar()
         self.version_algo_var = tk.StringVar()
@@ -609,24 +883,8 @@ class VisionIssueApp(tk.Tk):
         self.version_selected_lines = {LINES[0]}
         self.version_selected_instruments = {VERSION_GROUPS[self.version_group_var.get()][0]}
 
-        group_combo = self.add_labeled_combo(editor, "Version Group", self.version_group_var, list(VERSION_GROUPS.keys()), 1, 0)
-        group_combo.bind("<<ComboboxSelected>>", lambda _event: self.on_version_group_changed())
-        self.version_template_combo = self.add_labeled_combo(editor, "Version Template", self.version_template_var, [], 1, 2)
-        self.version_template_combo.bind("<<ComboboxSelected>>", lambda _event: self.load_selected_version_template())
-        self.add_labeled_entry(editor, "Update Time", self.version_update_time_var, 2, 0)
-        self.add_labeled_entry(editor, "SW Version", self.version_sw_var, 2, 2)
-        self.add_labeled_entry(editor, "Algo Version", self.version_algo_var, 3, 0)
-        self.version_create_issue_button = tk.Button(
-            editor,
-            anchor="w",
-            relief="raised",
-            command=self.toggle_create_issue_option,
-        )
-        self.version_create_issue_button.grid(row=3, column=2, columnspan=2, sticky="w", pady=7)
-        self.refresh_create_issue_button()
-
         target_frame = ttk.Frame(editor, style="Panel.TFrame")
-        target_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(6, 8))
+        target_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 10))
         self.version_line_buttons: dict[str, tk.Button] = {}
         self.version_instrument_buttons: dict[str, tk.Button] = {}
         self.tr_label(target_frame, "Line", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
@@ -635,15 +893,47 @@ class VisionIssueApp(tk.Tk):
             button.grid(row=0, column=column_index, padx=2, pady=3)
             self.version_line_buttons[line] = button
         self.tr_label(target_frame, "Vision", style="Panel.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=3)
-        for column_index, instrument in enumerate(INSTRUMENTS, start=1):
-            button = tk.Button(target_frame, text=instrument, width=14, command=lambda selected_instrument=instrument: self.toggle_version_instrument(selected_instrument))
-            button.grid(row=1, column=column_index, padx=2, pady=3)
+        for index, instrument in enumerate(INSTRUMENTS):
+            button = tk.Button(target_frame, text=instrument, width=15, command=lambda selected_instrument=instrument: self.toggle_version_instrument(selected_instrument))
+            button.grid(row=1 + index // 4, column=1 + index % 4, sticky="ew", padx=2, pady=3)
+            target_frame.columnconfigure(1 + index % 4, weight=1)
             self.version_instrument_buttons[instrument] = button
 
-        self.tr_label(editor, "Description", style="Panel.TLabel").grid(row=5, column=0, sticky="nw", pady=7)
-        self.version_description_text = tk.Text(editor, height=5, wrap="word", font=("Segoe UI", 10))
-        self.version_description_text.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=7)
-        self.version_description_text.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll(int(-event.delta / 60), "units"))
+        self.add_labeled_entry(editor, "SW Version", self.version_sw_var, 2, 0)
+        self.version_algo_entry = self.add_labeled_entry(editor, "Algo Version", self.version_algo_var, 2, 2)
+        self.add_labeled_entry(editor, "Update Time", self.version_update_time_var, 3, 0)
+        self.add_labeled_combo(editor, "Logged By", self.current_worker_var, WORKERS, 3, 2)
+        self.version_create_issue_button = tk.Button(
+            editor,
+            anchor="w",
+            relief="raised",
+            command=self.toggle_create_issue_option,
+        )
+        self.version_create_issue_button.grid(row=4, column=0, columnspan=4, sticky="w", pady=7)
+        self.refresh_create_issue_button()
+
+        self.version_update_description_label = self.tr_label(editor, "Description", style="Panel.TLabel")
+        self.version_update_description_label.grid(row=5, column=0, sticky="nw", pady=7)
+        self.version_single_description_text = tk.Text(editor, height=5, wrap="word", font=("Segoe UI", 10))
+        self.version_single_description_text.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.version_single_description_text.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll(int(-event.delta / 60), "units"))
+
+        self.version_split_description_frame = ttk.Frame(editor, style="Panel.TFrame")
+        self.version_split_description_frame.grid(row=5, column=1, columnspan=3, sticky="nsew", pady=7)
+        self.version_split_description_frame.columnconfigure(0, weight=1)
+        self.version_split_description_frame.columnconfigure(1, weight=0)
+        self.version_split_description_frame.columnconfigure(2, weight=1)
+        self.version_split_description_frame.rowconfigure(1, weight=1)
+        ttk.Label(self.version_split_description_frame, text="SW", style="Panel.TLabel", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 3))
+        ttk.Label(self.version_split_description_frame, text="Algo", style="Panel.TLabel", font=("Segoe UI", 9, "bold")).grid(row=0, column=2, sticky="w", padx=(10, 0), pady=(0, 3))
+        self.version_sw_description_text = tk.Text(self.version_split_description_frame, height=5, wrap="word", font=("Segoe UI", 10))
+        self.version_sw_description_text.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        divider = tk.Frame(self.version_split_description_frame, width=1, bg="#d1d5db")
+        divider.grid(row=1, column=1, sticky="ns")
+        self.version_algo_description_text = tk.Text(self.version_split_description_frame, height=5, wrap="word", font=("Segoe UI", 10))
+        self.version_algo_description_text.grid(row=1, column=2, sticky="nsew", padx=(10, 0))
+        self.version_sw_description_text.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll(int(-event.delta / 60), "units"))
+        self.version_algo_description_text.bind("<MouseWheel>", lambda event: editor_canvas.yview_scroll(int(-event.delta / 60), "units"))
 
         actions = ttk.Frame(editor, style="Panel.TFrame")
         actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
@@ -656,9 +946,6 @@ class VisionIssueApp(tk.Tk):
         description_container.rowconfigure(0, weight=1)
         description_canvas = tk.Canvas(description_container, background="#ffffff", highlightthickness=0)
         description_canvas.grid(row=0, column=0, sticky="nsew")
-        description_panel_scroll = ttk.Scrollbar(description_container, orient="vertical", command=description_canvas.yview)
-        description_panel_scroll.grid(row=0, column=1, sticky="ns")
-        description_canvas.configure(yscrollcommand=description_panel_scroll.set)
         description_panel = ttk.Frame(description_canvas, style="Panel.TFrame", padding=12)
         description_window = description_canvas.create_window((0, 0), window=description_panel, anchor="nw")
         description_panel.bind("<Configure>", lambda _event: description_canvas.configure(scrollregion=description_canvas.bbox("all")))
@@ -670,7 +957,7 @@ class VisionIssueApp(tk.Tk):
         description_panel.rowconfigure(7, weight=2)
         self.tr_label(description_panel, "Version Description", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
         group_buttons = ttk.Frame(description_panel, style="Panel.TFrame")
-        group_buttons.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        group_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         self.version_description_group_var = tk.StringVar(value=list(VERSION_GROUPS.keys())[0])
         self.version_description_buttons: dict[str, tk.Button] = {}
         for index, group_name in enumerate(VERSION_GROUPS):
@@ -685,23 +972,59 @@ class VisionIssueApp(tk.Tk):
         group_buttons.columnconfigure(0, weight=1)
         group_buttons.columnconfigure(1, weight=1)
 
-        self.version_description_list = tk.Listbox(description_panel, height=6, exportselection=False, font=("Segoe UI", 9))
-        self.version_description_list.grid(row=2, column=0, sticky="nsew")
-        self.version_description_list.bind("<<ListboxSelect>>", lambda _event: self.show_selected_version_description())
         self.version_description_sw_var = tk.StringVar()
         self.version_description_algo_var = tk.StringVar()
-        self.version_description_template_id: int | None = None
-        self.add_labeled_entry(description_panel, "SW Version", self.version_description_sw_var, 3, 0)
-        self.add_labeled_entry(description_panel, "Algo Version", self.version_description_algo_var, 4, 0)
-        self.tr_label(description_panel, "Description", style="Panel.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 2))
-        self.version_description_view = tk.Text(description_panel, height=8, wrap="word", font=("Segoe UI", 9))
-        self.version_description_view.grid(row=6, column=0, sticky="nsew")
-        self.version_description_view.bind("<MouseWheel>", lambda event: description_canvas.yview_scroll(int(-event.delta / 60), "units"))
-        description_actions = ttk.Frame(description_panel, style="Panel.TFrame")
-        description_actions.grid(row=7, column=0, sticky="ew", pady=(8, 0))
-        self.tr_button(description_actions, "Delete Version", self.delete_selected_version_template, prefix="✕ ").pack(side="left")
-        self.tr_button(description_actions, "Save Version", self.save_selected_version_template, prefix="✓ ", style="Accent.TButton").pack(side="right")
+        self.version_description_sw_selected_version: str | None = None
+        self.version_description_algo_selected_version: str | None = None
 
+        self.version_sw_description_panel = ttk.Frame(description_panel, style="Panel.TFrame")
+        self.version_sw_description_panel.grid(row=2, column=0, sticky="nsew", padx=(0, 6))
+        self.version_sw_description_panel.columnconfigure(0, weight=1)
+        self.version_sw_description_panel.rowconfigure(1, weight=1)
+        self.version_sw_description_panel.rowconfigure(3, weight=2)
+        self.version_description_sw_entry = self.add_inline_labeled_entry(
+            self.version_sw_description_panel,
+            "SW Version",
+            self.version_description_sw_var,
+            0,
+            width=18,
+        )
+        self.version_description_sw_list = tk.Listbox(self.version_sw_description_panel, height=5, exportselection=False, font=("Segoe UI", 9))
+        self.version_description_sw_list.grid(row=1, column=0, sticky="nsew")
+        self.version_description_sw_list.bind("<<ListboxSelect>>", lambda _event: self.show_selected_sw_description())
+        self.tr_label(self.version_sw_description_panel, "SW Description", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 2))
+        self.version_description_sw_text = tk.Text(self.version_sw_description_panel, height=7, wrap="word", font=("Segoe UI", 9))
+        self.version_description_sw_text.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
+        sw_actions = ttk.Frame(self.version_sw_description_panel, style="Panel.TFrame")
+        sw_actions.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.tr_button(sw_actions, "Delete SW", self.delete_selected_sw_version_template, prefix="✕ ").pack(side="left")
+        self.tr_button(sw_actions, "Save SW", self.save_selected_sw_version_template, prefix="✓ ", style="Accent.TButton").pack(side="right")
+
+        self.version_algo_description_panel = ttk.Frame(description_panel, style="Panel.TFrame")
+        self.version_algo_description_panel.grid(row=2, column=1, sticky="nsew", padx=(6, 0))
+        self.version_algo_description_panel.columnconfigure(0, weight=1)
+        self.version_algo_description_panel.rowconfigure(1, weight=1)
+        self.version_algo_description_panel.rowconfigure(3, weight=2)
+        self.version_description_algo_entry = self.add_inline_labeled_entry(
+            self.version_algo_description_panel,
+            "Algo Version",
+            self.version_description_algo_var,
+            0,
+            width=18,
+        )
+        self.version_description_algo_list = tk.Listbox(self.version_algo_description_panel, height=5, exportselection=False, font=("Segoe UI", 9))
+        self.version_description_algo_list.grid(row=1, column=0, sticky="nsew")
+        self.version_description_algo_list.bind("<<ListboxSelect>>", lambda _event: self.show_selected_algo_description())
+        self.tr_label(self.version_algo_description_panel, "Algo Description", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=(6, 2))
+        self.version_description_algo_text = tk.Text(self.version_algo_description_panel, height=7, wrap="word", font=("Segoe UI", 9))
+        self.version_description_algo_text.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
+        algo_actions = ttk.Frame(self.version_algo_description_panel, style="Panel.TFrame")
+        algo_actions.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        self.tr_button(algo_actions, "Delete Algo", self.delete_selected_algo_version_template, prefix="✕ ").pack(side="left")
+        self.tr_button(algo_actions, "Save Algo", self.save_selected_algo_version_template, prefix="✓ ", style="Accent.TButton").pack(side="right")
+
+        self.bind_mousewheel_recursive(editor, editor_canvas)
+        self.bind_mousewheel_recursive(description_panel, description_canvas)
         self.on_version_group_changed()
         self.refresh_version_history()
 
@@ -713,29 +1036,94 @@ class VisionIssueApp(tk.Tk):
         marker = "☑" if self.version_create_issue_var.get() else "☐"
         self.version_create_issue_button.configure(text=f"{marker} {self.text('Create Monitoring Issue')}")
 
+    def format_version_template_label(self, row) -> str:
+        if not version_group_uses_algo(row["group_name"]):
+            return f"SW {row['sw_version']}"
+        return f"SW {row['sw_version']} / A {row['algo_version']}"
+
+    def refresh_version_algo_input(self) -> None:
+        uses_algo = version_group_uses_algo(self.version_group_var.get())
+        state = "normal" if uses_algo else "disabled"
+        self.version_algo_entry.configure(state=state)
+        self.refresh_version_update_description_layout()
+        if not uses_algo:
+            self.version_algo_var.set("")
+
+    def refresh_version_update_description_layout(self) -> None:
+        if not hasattr(self, "version_single_description_text"):
+            return
+        uses_algo = version_group_uses_algo(self.version_group_var.get())
+        if uses_algo:
+            self.version_single_description_text.grid_remove()
+            self.version_split_description_frame.grid()
+        else:
+            self.version_split_description_frame.grid_remove()
+            self.version_single_description_text.grid()
+
+    def split_version_update_description(self, value: str) -> tuple[str, str]:
+        sw_marker = "[SW Description]"
+        algo_marker = "[Algo Description]"
+        if sw_marker in value or algo_marker in value:
+            sw_text = value
+            algo_text = ""
+            if sw_marker in value:
+                sw_text = value.split(sw_marker, 1)[1]
+            if algo_marker in sw_text:
+                sw_text, algo_text = sw_text.split(algo_marker, 1)
+            elif algo_marker in value:
+                _, algo_text = value.split(algo_marker, 1)
+            return sw_text.strip(), algo_text.strip()
+        return value.strip(), ""
+
+    def set_version_update_description(self, value: str) -> None:
+        sw_text, algo_text = self.split_version_update_description(value or "")
+        for widget, text in [
+            (self.version_single_description_text, value or ""),
+            (self.version_sw_description_text, sw_text),
+            (self.version_algo_description_text, algo_text),
+        ]:
+            widget.delete("1.0", "end")
+            widget.insert("1.0", text)
+
+    def version_update_description_value(self) -> str:
+        if not version_group_uses_algo(self.version_group_var.get()):
+            return self.version_single_description_text.get("1.0", "end").strip()
+        sw_text = self.version_sw_description_text.get("1.0", "end").strip()
+        algo_text = self.version_algo_description_text.get("1.0", "end").strip()
+        parts = []
+        if sw_text:
+            parts.append(f"[SW Description]\n{sw_text}")
+        if algo_text:
+            parts.append(f"[Algo Description]\n{algo_text}")
+        return "\n\n".join(parts)
+
+    def version_update_description_parts(self) -> tuple[str, str]:
+        if not version_group_uses_algo(self.version_group_var.get()):
+            return self.version_single_description_text.get("1.0", "end").strip(), ""
+        return (
+            self.version_sw_description_text.get("1.0", "end").strip(),
+            self.version_algo_description_text.get("1.0", "end").strip(),
+        )
+
+    def refresh_description_algo_input(self) -> None:
+        uses_algo = version_group_uses_algo(self.version_description_group_var.get())
+        if uses_algo:
+            self.version_sw_description_panel.grid_configure(column=0, columnspan=1, padx=(0, 6))
+            self.version_algo_description_panel.grid(row=2, column=1, sticky="nsew", padx=(6, 0))
+        else:
+            self.version_algo_description_panel.grid_remove()
+            self.version_sw_description_panel.grid_configure(column=0, columnspan=2, padx=(0, 0))
+            self.version_description_algo_selected_version = None
+            self.version_description_algo_var.set("")
+            self.version_description_algo_list.delete(0, "end")
+            self.set_version_description_text(self.version_description_algo_text, "")
+
     def on_version_group_changed(self) -> None:
         group_name = self.version_group_var.get()
-        allowed = VERSION_GROUPS[group_name]
-        self.version_selected_instruments = {allowed[0]}
+        if not any(INSTRUMENT_GROUP[instrument] == group_name for instrument in self.version_selected_instruments):
+            self.version_selected_instruments = {VERSION_GROUPS[group_name][0]}
+        self.refresh_version_algo_input()
         self.refresh_version_target_buttons()
-        self.refresh_version_templates()
-
-    def refresh_version_templates(self) -> None:
-        templates = recent_version_templates(self.version_group_var.get(), 3)
-        self.version_template_rows = {
-            f"{row['sw_version']} / {row['algo_version']}": row
-            for row in templates
-        }
-        values = list(self.version_template_rows.keys())
-        self.version_template_combo.configure(values=values)
-        if values:
-            self.version_template_var.set(values[0])
-            self.load_selected_version_template()
-        else:
-            self.version_template_var.set("")
-            self.version_sw_var.set("")
-            self.version_algo_var.set("")
-            self.version_description_text.delete("1.0", "end")
 
     def select_description_group(self, group_name: str) -> None:
         self.version_description_group_var.set(group_name)
@@ -756,46 +1144,84 @@ class VisionIssueApp(tk.Tk):
 
     def populate_version_description_dashboard(self) -> None:
         self.refresh_description_group_buttons()
-        rows = recent_version_templates(self.version_description_group_var.get(), 3)
-        self.version_description_rows = rows
-        self.version_description_list.delete(0, "end")
-        for row in rows:
-            self.version_description_list.insert("end", f"SW {row['sw_version']} / Algo {row['algo_version']}")
-        if rows:
-            self.version_description_list.selection_set(0)
-            self.show_selected_version_description()
+        self.refresh_description_algo_input()
+        group_name = self.version_description_group_var.get()
+        self.version_description_sw_rows = version_component_templates(group_name, "sw")
+        self.version_description_sw_list.delete(0, "end")
+        for row in self.version_description_sw_rows:
+            self.version_description_sw_list.insert("end", row["version"])
+        if self.version_description_sw_rows:
+            self.version_description_sw_list.selection_set(0)
+            self.show_selected_sw_description()
         else:
-            self.version_description_template_id = None
             self.version_description_sw_var.set("")
-            self.version_description_algo_var.set("")
-            self.set_version_description_text("")
+            self.version_description_sw_selected_version = None
+            self.set_version_description_text(self.version_description_sw_text, "")
 
-    def show_selected_version_description(self) -> None:
-        selection = self.version_description_list.curselection()
+        if version_group_uses_algo(group_name):
+            self.version_description_algo_rows = version_component_templates(group_name, "algo")
+            self.version_description_algo_list.delete(0, "end")
+            for row in self.version_description_algo_rows:
+                self.version_description_algo_list.insert("end", row["version"])
+            if self.version_description_algo_rows:
+                self.version_description_algo_list.selection_set(0)
+                self.show_selected_algo_description()
+            else:
+                self.version_description_algo_var.set("")
+                self.version_description_algo_selected_version = None
+                self.set_version_description_text(self.version_description_algo_text, "")
+
+    def show_selected_sw_description(self) -> None:
+        selection = self.version_description_sw_list.curselection()
         if not selection:
-            self.version_description_template_id = None
-            self.set_version_description_text("")
+            self.version_description_sw_selected_version = None
+            self.set_version_description_text(self.version_description_sw_text, "")
             return
-        row = self.version_description_rows[selection[0]]
-        self.version_description_template_id = int(row["id"])
-        self.version_description_sw_var.set(row["sw_version"])
-        self.version_description_algo_var.set(row["algo_version"])
-        self.set_version_description_text(row["description"] or "")
+        row = self.version_description_sw_rows[selection[0]]
+        self.version_description_sw_selected_version = row["version"]
+        self.version_description_sw_var.set(row["version"])
+        self.set_version_description_text(self.version_description_sw_text, row["description"] or "")
 
-    def set_version_description_text(self, value: str) -> None:
-        self.version_description_view.delete("1.0", "end")
-        self.version_description_view.insert("1.0", value)
+    def show_selected_algo_description(self) -> None:
+        selection = self.version_description_algo_list.curselection()
+        if not selection:
+            self.version_description_algo_selected_version = None
+            self.set_version_description_text(self.version_description_algo_text, "")
+            return
+        row = self.version_description_algo_rows[selection[0]]
+        self.version_description_algo_selected_version = row["version"]
+        self.version_description_algo_var.set(row["version"])
+        self.set_version_description_text(self.version_description_algo_text, row["description"] or "")
 
-    def save_selected_version_template(self) -> None:
-        if self.version_description_template_id is None:
+    def set_version_description_text(self, widget: tk.Text, value: str) -> None:
+        widget.delete("1.0", "end")
+        widget.insert("1.0", value)
+
+    def save_selected_sw_version_template(self) -> None:
+        self.save_selected_version_component_template("sw")
+
+    def save_selected_algo_version_template(self) -> None:
+        self.save_selected_version_component_template("algo")
+
+    def save_selected_version_component_template(self, component: str) -> None:
+        if component == "sw":
+            selected_version = self.version_description_sw_selected_version
+            new_version = self.version_description_sw_var.get().strip()
+            description = self.version_description_sw_text.get("1.0", "end").strip()
+        else:
+            selected_version = self.version_description_algo_selected_version
+            new_version = self.version_description_algo_var.get().strip()
+            description = self.version_description_algo_text.get("1.0", "end").strip()
+        if not selected_version:
             messagebox.showwarning(APP_TITLE, "Select a version first.")
             return
         try:
-            update_version_template(
-                self.version_description_template_id,
-                self.version_description_sw_var.get().strip(),
-                self.version_description_algo_var.get().strip(),
-                self.version_description_view.get("1.0", "end").strip(),
+            update_version_component_template(
+                self.version_description_group_var.get(),
+                component,
+                selected_version,
+                new_version,
+                description,
                 self.current_worker_var.get().strip(),
             )
         except ValueError as exc:
@@ -804,39 +1230,72 @@ class VisionIssueApp(tk.Tk):
         self.refresh_version_history()
         messagebox.showinfo(APP_TITLE, "Version updated.")
 
-    def delete_selected_version_template(self) -> None:
-        if self.version_description_template_id is None:
+    def delete_selected_sw_version_template(self) -> None:
+        self.delete_selected_version_component_template("sw")
+
+    def delete_selected_algo_version_template(self) -> None:
+        self.delete_selected_version_component_template("algo")
+
+    def delete_selected_version_component_template(self, component: str) -> None:
+        if component == "sw":
+            selected_version = self.version_description_sw_selected_version
+            label = f"SW {selected_version}" if selected_version else ""
+        else:
+            selected_version = self.version_description_algo_selected_version
+            label = f"Algo {selected_version}" if selected_version else ""
+        if not selected_version:
             messagebox.showwarning(APP_TITLE, "Select a version first.")
             return
-        row = get_version_template(self.version_description_template_id)
-        title = "selected version"
-        if row:
-            title = f"{row['group_name']} / SW {row['sw_version']} / Algo {row['algo_version']}"
         if not messagebox.askyesno(
             APP_TITLE,
-            f"Delete this version?\n\n{title}\n\nApplied version dashboard records for this version will also be removed.",
+            f"Delete this version?\n\n{self.version_description_group_var.get()} / {label}\n\nApplied version dashboard records for this version will also be removed.",
         ):
             return
-        delete_version_template(self.version_description_template_id)
-        self.version_description_template_id = None
+        delete_version_component_template(
+            self.version_description_group_var.get(),
+            component,
+            selected_version,
+        )
         self.refresh_version_history()
         messagebox.showinfo(APP_TITLE, "Version deleted.")
-
-    def load_selected_version_template(self) -> None:
-        row = getattr(self, "version_template_rows", {}).get(self.version_template_var.get())
-        if row is None:
-            return
-        self.version_sw_var.set(row["sw_version"])
-        self.version_algo_var.set(row["algo_version"])
-        self.version_description_text.delete("1.0", "end")
-        self.version_description_text.insert("1.0", row["description"] or "")
 
     def select_version_target(self, line: str, instrument: str) -> None:
         self.version_group_var.set(INSTRUMENT_GROUP[instrument])
         self.version_selected_lines = {line}
         self.version_selected_instruments = {instrument}
-        self.refresh_version_templates()
+        self.refresh_version_algo_input()
         self.refresh_version_target_buttons()
+        self.select_version_description_for_target(line, instrument)
+
+    def select_version_description_for_target(self, line: str, instrument: str) -> None:
+        group_name = INSTRUMENT_GROUP[instrument]
+        self.version_description_group_var.set(group_name)
+        self.populate_version_description_dashboard()
+        row = getattr(self, "version_dashboard_latest", {}).get((line, instrument))
+        if not row:
+            return
+        self.select_version_description_component("sw", row.get("sw_version", ""))
+        if instrument_uses_algo(instrument):
+            self.select_version_description_component("algo", row.get("algo_version", ""))
+
+    def select_version_description_component(self, component: str, version: str) -> None:
+        if not version:
+            return
+        if component == "sw":
+            rows = getattr(self, "version_description_sw_rows", [])
+            listbox = self.version_description_sw_list
+            show = self.show_selected_sw_description
+        else:
+            rows = getattr(self, "version_description_algo_rows", [])
+            listbox = self.version_description_algo_list
+            show = self.show_selected_algo_description
+        listbox.selection_clear(0, "end")
+        for index, row in enumerate(rows):
+            if row["version"] == version:
+                listbox.selection_set(index)
+                listbox.see(index)
+                show()
+                return
 
     def toggle_version_line(self, line: str) -> None:
         if line in self.version_selected_lines and len(self.version_selected_lines) > 1:
@@ -846,7 +1305,12 @@ class VisionIssueApp(tk.Tk):
         self.refresh_version_target_buttons()
 
     def toggle_version_instrument(self, instrument: str) -> None:
-        if INSTRUMENT_GROUP[instrument] != self.version_group_var.get():
+        instrument_group = INSTRUMENT_GROUP[instrument]
+        if instrument_group != self.version_group_var.get():
+            self.version_group_var.set(instrument_group)
+            self.version_selected_instruments = {instrument}
+            self.refresh_version_algo_input()
+            self.refresh_version_target_buttons()
             return
         if instrument in self.version_selected_instruments and len(self.version_selected_instruments) > 1:
             self.version_selected_instruments.remove(instrument)
@@ -872,9 +1336,9 @@ class VisionIssueApp(tk.Tk):
             is_allowed = INSTRUMENT_GROUP[instrument] == group_name
             is_selected = instrument in self.version_selected_instruments
             button.configure(
-                state="normal" if is_allowed else "disabled",
+                state="normal",
                 background=selected_bg if is_selected else (default_bg if is_allowed else disabled_bg),
-                foreground=selected_fg if is_selected else default_fg,
+                foreground=selected_fg if is_selected else (default_fg if is_allowed else "#6b7280"),
                 relief="sunken" if is_selected else "raised",
             )
 
@@ -884,7 +1348,9 @@ class VisionIssueApp(tk.Tk):
         if not lines or not instruments:
             messagebox.showwarning(APP_TITLE, "Select at least one line and one vision.")
             return
-        description = self.version_description_text.get("1.0", "end").strip()
+        description = self.version_update_description_value()
+        sw_description, algo_description = self.version_update_description_parts()
+        algo_version = self.version_algo_var.get().strip() if version_group_uses_algo(self.version_group_var.get()) else ""
         saved_count = 0
         try:
             for line in lines:
@@ -896,9 +1362,11 @@ class VisionIssueApp(tk.Tk):
                             line=line,
                             instrument=instrument,
                             sw_version=self.version_sw_var.get().strip(),
-                            algo_version=self.version_algo_var.get().strip(),
+                            algo_version=algo_version,
                             description=description,
                             worker=self.current_worker_var.get().strip(),
+                            sw_description=sw_description,
+                            algo_description=algo_description,
                         ),
                         self.version_create_issue_var.get(),
                     )
@@ -913,7 +1381,6 @@ class VisionIssueApp(tk.Tk):
 
     def refresh_version_history(self) -> None:
         self.populate_version_dashboard()
-        self.refresh_version_templates()
         self.populate_version_description_dashboard()
 
     def export_version_dashboard(self) -> None:
@@ -930,28 +1397,61 @@ class VisionIssueApp(tk.Tk):
         messagebox.showinfo(APP_TITLE, f"Version dashboard saved:\n{output}")
 
     def populate_version_dashboard(self) -> None:
-        latest = latest_version_by_instrument()
+        latest = latest_dashboard_versions()
+        self.version_dashboard_latest = latest
         recent_threshold = datetime.now() - timedelta(days=7)
+        latest_keys = {
+            instrument: self.latest_current_version_keys(latest, instrument)
+            for instrument in INSTRUMENTS
+        }
         for line in LINES:
             for instrument in INSTRUMENTS:
                 row = latest.get((line, instrument))
-                card = self.version_cards[(line, instrument)]
+                cell = self.version_cells[(line, instrument)]
+                shell = cell["shell"]
+                recent_bar = cell["recent_bar"]
+                sw_label = cell["sw_label"]
+                algo_label = cell["algo_label"]
+                sw_dot = cell["sw_dot"]
+                algo_dot = cell["algo_dot"]
+
                 if row is None:
-                    card.configure(text=f"{line}\nNo Version", bg="#fff1f2", fg="#9f1239")
+                    shell.configure(bg="#e5e7eb")
+                    recent_bar.configure(bg="#ffffff")
+                    sw_label.configure(text="-", fg="#6b7280")
+                    algo_label.configure(text="")
+                    self.draw_status_dot(sw_dot, None)
+                    self.draw_status_dot(algo_dot, None)
                     continue
-                text = (
-                    f"{line}\n"
-                    f"SW {row['sw_version']}\n"
-                    f"Algo {row['algo_version']}\n"
-                    f"{row['update_time']}"
+
+                max_sw, max_algo = latest_keys[instrument]
+                sw_key = self.normalized_version_key(row["sw_version"], len(max_sw or ()))
+                algo_key = self.normalized_version_key(row["algo_version"], len(max_algo or ()))
+                sw_outdated = max_sw is not None and sw_key is not None and sw_key < max_sw
+                algo_outdated = (
+                    instrument_uses_algo(instrument)
+                    and max_algo is not None
+                    and algo_key is not None
+                    and algo_key < max_algo
                 )
                 try:
                     updated = datetime.strptime(row["update_time"], "%Y-%m-%d %H:%M")
                 except ValueError:
                     updated = datetime.min
-                bg = "#ecfdf3" if updated >= recent_threshold else "#ffffff"
-                fg = "#166534" if updated >= recent_threshold else "#111827"
-                card.configure(text=text, bg=bg, fg=fg)
+
+                shell.configure(bg="#d8dee8")
+                recent_bar.configure(bg="#22c55e" if updated >= recent_threshold else "#ffffff")
+                sw_label.configure(text=f"SW {row['sw_version']}", fg="#111827")
+                self.draw_status_dot(sw_dot, "#f59e0b" if sw_outdated else None)
+                if instrument_uses_algo(instrument):
+                    algo_label.grid()
+                    algo_dot.grid()
+                    algo_label.configure(text=f"A {row['algo_version']}", fg="#111827")
+                    self.draw_status_dot(algo_dot, "#2563eb" if algo_outdated else None)
+                else:
+                    algo_label.grid_remove()
+                    algo_dot.grid_remove()
+                    self.draw_status_dot(algo_dot, None)
 
     def make_issue_tree(self, parent: ttk.Frame) -> ttk.Treeview:
         columns = ("id", "issue_time", "line", "instrument", "category", "subcategory", "title", "status", "worker")
@@ -980,7 +1480,7 @@ class VisionIssueApp(tk.Tk):
         }
         for column in columns:
             tree.heading(column, text=self.text(headings[column]))
-            tree.column(column, width=widths[column], anchor="w")
+            tree.column(column, width=widths[column], minwidth=widths[column], stretch=False, anchor="w")
         for status, (background, foreground) in STATUS_TAGS.items():
             tree.tag_configure(status, background=background, foreground=foreground)
         tree.bind("<MouseWheel>", lambda event: tree.yview_scroll(int(-event.delta / 60), "units"))
@@ -990,6 +1490,21 @@ class VisionIssueApp(tk.Tk):
         self.tr_label(parent, label, style="Panel.TLabel").grid(row=row, column=column, sticky="w", padx=(0, 8), pady=7)
         entry = ttk.Entry(parent, textvariable=variable)
         entry.grid(row=row, column=column + 1, columnspan=columnspan, sticky="ew", pady=7)
+        return entry
+
+    def add_inline_labeled_entry(
+        self,
+        parent: ttk.Frame,
+        label: str,
+        variable: tk.StringVar,
+        row: int,
+        width: int = 17,
+    ) -> ttk.Entry:
+        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame.grid(row=row, column=0, columnspan=2, sticky="w", pady=5)
+        self.tr_label(frame, label, style="Panel.TLabel", width=12).pack(side="left", padx=(0, 8))
+        entry = ttk.Entry(frame, textvariable=variable, width=width)
+        entry.pack(side="left")
         return entry
 
     def add_datetime_picker(self, parent: ttk.Frame, label: str, row: int, column: int) -> None:
@@ -1102,7 +1617,8 @@ class VisionIssueApp(tk.Tk):
 
     def update_subcategories(self) -> None:
         values = CATEGORY_MAP.get(self.category_var.get(), [""])
-        self.subcategory_combo.configure(values=values)
+        if hasattr(self, "subcategory_combo") and self.subcategory_combo.winfo_exists():
+            self.subcategory_combo.configure(values=values)
         self.subcategory_var.set(values[0])
 
     def update_filter_subcategories(self) -> None:
@@ -1112,13 +1628,12 @@ class VisionIssueApp(tk.Tk):
         self.filter_subcategory.set("")
 
     def form_issue(self) -> IssueInput:
-        worker = self.loaded_issue_worker or self.current_worker_var.get().strip()
         return IssueInput(
             issue_time=self.issue_datetime_text(),
             resolved_time=self.resolved_time_var.get().strip() or "00:00",
             line=self.line_var.get().strip(),
             instrument=self.instrument_var.get().strip(),
-            worker=worker,
+            worker=self.current_worker_var.get().strip(),
             category=self.category_var.get().strip(),
             subcategory=self.subcategory_var.get().strip(),
             title=self.title_var.get().strip(),
@@ -1139,8 +1654,7 @@ class VisionIssueApp(tk.Tk):
                 messagebox.showinfo(APP_TITLE, "Issue updated.")
             self.refresh_open_issues()
             self.search_records()
-            self.load_issue_into_form(saved_id)
-            self.select_issue_in_tree(self.open_tree, saved_id)
+            self.show_issue_detail(saved_id)
             self.select_issue_in_tree(self.search_tree, saved_id)
         except ValueError as exc:
             messagebox.showerror(APP_TITLE, str(exc))
@@ -1148,6 +1662,7 @@ class VisionIssueApp(tk.Tk):
     def clear_form(self) -> None:
         self.selected_issue_id = None
         self.loaded_issue_worker = ""
+        self.current_worker_var.set(WORKERS[0])
         self.set_issue_datetime(now_text())
         self.resolved_time_var.set("00:00")
         self.line_var.set(LINES[0])
@@ -1157,19 +1672,121 @@ class VisionIssueApp(tk.Tk):
         self.update_subcategories()
         self.status_var.set(ACTIVE_STATUS_OPTIONS[0])
         self.title_var.set("")
-        self.description_text.delete("1.0", "end")
-        self.resolution_text.delete("1.0", "end")
+        self.form_description_value = ""
+        self.form_resolution_value = ""
+        for widget_name in ["description_text", "resolution_text"]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None and widget.winfo_exists():
+                widget.delete("1.0", "end")
 
     def refresh_open_issues(self) -> None:
-        rows = active_issues()
-        self.populate_tree(self.open_tree, rows)
-        self.refresh_dashboard()
-        self.update_detail_panel(self.open_tree)
+        self.active_issue_rows = active_issues()
+        self.render_issue_board()
 
-    def refresh_dashboard(self) -> None:
-        counts = dashboard_counts()
-        for title, variable in self.dashboard_vars.items():
-            variable.set(str(counts.get(title, 0)))
+    def render_issue_board(self) -> None:
+        rows_by_status = {status: [] for status in ACTIVE_STATUS_OPTIONS}
+        for row in self.active_issue_rows:
+            if row["status"] in rows_by_status:
+                rows_by_status[row["status"]].append(row)
+
+        self.issue_card_widgets = {}
+        for status, frame in self.board_columns.items():
+            for child in frame.winfo_children():
+                child.destroy()
+            self.board_count_vars[status].set(str(len(rows_by_status[status])))
+            if not rows_by_status[status]:
+                ttk.Label(frame, text="-", style="Panel.TLabel").pack(anchor="center", pady=18)
+            for row in rows_by_status[status]:
+                self.add_issue_card(frame, row, self.board_column_canvases[status])
+            self.bind_mousewheel_recursive(frame, self.board_column_canvases[status])
+            self.board_column_canvases[status].yview_moveto(0)
+        self.refresh_board_card_styles()
+
+    def add_issue_card(self, parent: ttk.Frame, row, canvas: tk.Canvas) -> None:
+        issue_id = int(row["id"])
+        card = tk.Frame(
+            parent,
+            bg="#ffffff",
+            highlightbackground="#d8dee8",
+            highlightthickness=1,
+            padx=10,
+            pady=8,
+        )
+        card.pack(fill="x", padx=(0, 2), pady=(0, 8))
+        widgets: list[tk.Widget] = []
+
+        title = tk.Label(
+            card,
+            text=row["title"] or "-",
+            bg="#ffffff",
+            fg="#111827",
+            font=("Segoe UI", 10, "bold"),
+            anchor="w",
+            justify="left",
+            wraplength=330,
+        )
+        title.pack(fill="x", anchor="w")
+        widgets.append(title)
+
+        category_text = row["category"]
+        if row["subcategory"]:
+            category_text = f"{category_text} / {row['subcategory']}"
+        lines = [
+            f"{row['line']} / {row['instrument']}",
+            category_text,
+            row["issue_time"] or "-",
+            f"{self.text('Downtime Duration')}: {row['resolved_time'] or '00:00'}",
+        ]
+        for value in lines:
+            label = tk.Label(
+                card,
+                text=value,
+                bg="#ffffff",
+                fg="#4b5563",
+                font=("Segoe UI", 9),
+                anchor="w",
+                justify="left",
+                wraplength=330,
+            )
+            label.pack(fill="x", anchor="w", pady=(4, 0))
+            widgets.append(label)
+
+        self.issue_card_widgets[issue_id] = (card, widgets)
+        self.bind_issue_card_click(card, issue_id)
+        self.bind_mousewheel_recursive(card, canvas)
+
+    def bind_issue_card_click(self, widget: tk.Widget, issue_id: int) -> None:
+        widget.bind("<Button-1>", lambda _event, selected_id=issue_id: self.select_issue_card(selected_id))
+        for child in widget.winfo_children():
+            self.bind_issue_card_click(child, issue_id)
+
+    def select_issue_card(self, issue_id: int) -> None:
+        self.show_issue_detail(issue_id)
+
+    def refresh_board_card_styles(self) -> None:
+        for issue_id, (card, widgets) in getattr(self, "issue_card_widgets", {}).items():
+            is_selected = issue_id == self.selected_issue_id
+            bg = "#eef6ff" if is_selected else "#ffffff"
+            border = "#1f6feb" if is_selected else "#d8dee8"
+            card.configure(bg=bg, highlightbackground=border, highlightthickness=2 if is_selected else 1)
+            for widget in widgets:
+                widget.configure(bg=bg)
+
+    def move_issue_status(self, issue_id: int, status: str) -> None:
+        try:
+            set_issue_status(issue_id, status)
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self.refresh_open_issues()
+        self.search_records()
+        self.show_issue_detail(issue_id)
+
+    def resolve_issue_from_board(self, issue_id: int) -> None:
+        resolve_issue(issue_id)
+        self.refresh_open_issues()
+        self.search_records()
+        self.show_empty_issue_detail()
 
     def search_records(self) -> None:
         filters = {
@@ -1184,6 +1801,8 @@ class VisionIssueApp(tk.Tk):
         }
         self.search_rows = search_issues(filters)
         self.populate_tree(self.search_tree, self.search_rows)
+        if self.search_tree.get_children():
+            self.search_tree.yview_moveto(1.0)
 
     def reset_search_date_bounds(self) -> None:
         first_time, latest_time = issue_time_bounds()
@@ -1257,49 +1876,21 @@ class VisionIssueApp(tk.Tk):
         return int(selection[0])
 
     def load_selected_open_issue(self) -> None:
-        issue_id = self.selected_tree_id(self.open_tree)
-        if issue_id is None:
-            messagebox.showwarning(APP_TITLE, "Select an open issue first.")
+        if self.selected_issue_id is None:
+            messagebox.showwarning(APP_TITLE, "Select an issue first.")
             return
-        self.load_issue_into_form(issue_id)
+        self.show_edit_issue_form(self.selected_issue_id)
 
-    def update_detail_panel(self, tree: ttk.Treeview) -> None:
-        if not hasattr(self, "detail_vars"):
-            return
-        issue_id = self.selected_tree_id(tree)
-        row = get_issue(issue_id) if issue_id is not None else None
-        if row is None:
-            for variable in self.detail_vars.values():
-                variable.set("-")
-            self.set_detail_description("")
-            return
-        category_text = row["category"]
-        if row["subcategory"]:
-            category_text = f"{category_text} / {row['subcategory']}"
-        self.detail_vars["Title"].set(row["title"] or "-")
-        self.detail_vars["Status"].set(row["status"] or "-")
-        self.detail_vars["Line / Instrument"].set(f"{row['line']} / {row['instrument']}")
-        self.detail_vars["Category"].set(category_text)
-        self.detail_vars["Issue Time"].set(row["issue_time"] or "-")
-        self.detail_vars["Logged By"].set(row["worker"] or "-")
-        self.detail_vars["Downtime Duration"].set(row["resolved_time"] or "-")
-        self.set_detail_description(row["description"] or "")
-
-    def set_detail_description(self, value: str) -> None:
-        self.detail_description.configure(state="normal")
-        self.detail_description.delete("1.0", "end")
-        self.detail_description.insert("1.0", value)
-        self.detail_description.configure(state="disabled")
-
-    def load_issue_into_form(self, issue_id: int) -> None:
+    def load_issue_state(self, issue_id: int) -> bool:
         row = get_issue(issue_id)
         if row is None:
             messagebox.showerror(APP_TITLE, "Issue was not found.")
-            return
+            return False
         self.selected_issue_id = issue_id
         self.loaded_issue_worker = row["worker"] or ""
+        self.current_worker_var.set(row["worker"] or WORKERS[0])
         self.set_issue_datetime(row["issue_time"])
-        self.resolved_time_var.set(row["resolved_time"] or "")
+        self.resolved_time_var.set(row["resolved_time"] or "00:00")
         self.line_var.set(row["line"])
         self.instrument_var.set(row["instrument"])
         self.category_var.set(row["category"])
@@ -1307,18 +1898,20 @@ class VisionIssueApp(tk.Tk):
         self.subcategory_var.set(row["subcategory"] or "")
         self.status_var.set(row["status"])
         self.title_var.set(row["title"])
-        self.description_text.delete("1.0", "end")
-        self.description_text.insert("1.0", row["description"] or "")
-        self.resolution_text.delete("1.0", "end")
-        self.resolution_text.insert("1.0", row["resolution_notes"] or "")
-        self.notebook.select(self.entry_tab)
+        self.form_description_value = row["description"] or ""
+        self.form_resolution_value = row["resolution_notes"] or ""
+        return True
+
+    def load_issue_into_form(self, issue_id: int) -> None:
+        self.show_edit_issue_form(issue_id)
 
     def load_selected_search_issue(self) -> None:
         issue_id = self.selected_tree_id(self.search_tree)
         if issue_id is None:
             messagebox.showwarning(APP_TITLE, "Select a search result first.")
             return
-        self.load_issue_into_form(issue_id)
+        self.notebook.select(self.open_tab)
+        self.show_issue_detail(issue_id)
 
     def select_issue_in_tree(self, tree: ttk.Treeview, issue_id: int) -> None:
         for item in tree.get_children():
@@ -1357,13 +1950,10 @@ class VisionIssueApp(tk.Tk):
         return f"{self.issue_date_var.get().strip()} {hour:02d}:{minute:02d}"
 
     def resolve_selected_open_issue(self) -> None:
-        issue_id = self.selected_tree_id(self.open_tree)
-        if issue_id is None:
-            messagebox.showwarning(APP_TITLE, "Select an open issue first.")
+        if self.selected_issue_id is None:
+            messagebox.showwarning(APP_TITLE, "Select an issue first.")
             return
-        resolve_issue(issue_id)
-        self.refresh_open_issues()
-        self.search_records()
+        self.resolve_issue_from_board(self.selected_issue_id)
 
     def quick_status_selected(self, tree: ttk.Treeview, status: str) -> None:
         issue_id = self.selected_tree_id(tree)
@@ -1377,8 +1967,7 @@ class VisionIssueApp(tk.Tk):
             return
         self.refresh_open_issues()
         self.search_records()
-        self.select_issue_in_tree(self.open_tree, issue_id)
-        self.update_detail_panel(self.open_tree)
+        self.show_issue_detail(issue_id)
 
     def delete_loaded_issue(self) -> None:
         if self.selected_issue_id is None:
@@ -1404,6 +1993,7 @@ class VisionIssueApp(tk.Tk):
         delete_issue(issue_id)
         if self.selected_issue_id == issue_id:
             self.clear_form()
+            self.show_empty_issue_detail()
         self.refresh_open_issues()
         self.search_records()
 
@@ -1411,7 +2001,7 @@ class VisionIssueApp(tk.Tk):
         if not self.search_rows:
             messagebox.showwarning(APP_TITLE, "No search results to export.")
             return
-        default_name = f"vision_issue_report_{now_text().replace(':', '').replace(' ', '_')}.xlsx"
+        default_name = f"PKG Inspection Daily Issue List_{datetime.now().strftime('%y%m%d')}.xlsx"
         output = filedialog.asksaveasfilename(
             title="Save Excel Report",
             defaultextension=".xlsx",

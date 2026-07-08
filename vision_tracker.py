@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import re
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
@@ -51,6 +52,31 @@ INSTRUMENT_GROUP = {
     for group_name, instruments in VERSION_GROUPS.items()
     for instrument in instruments
 }
+NO_ALGO_INSTRUMENTS = {"Sealing"}
+
+
+def instrument_uses_algo(instrument: str) -> bool:
+    return instrument not in NO_ALGO_INSTRUMENTS
+
+
+def version_group_uses_algo(group_name: str) -> bool:
+    return any(instrument_uses_algo(instrument) for instrument in VERSION_GROUPS.get(group_name, []))
+
+
+def version_sort_key(value: str) -> tuple[int, ...] | None:
+    digits: list[str] = []
+    current = ""
+    for char in value:
+        if char.isdigit():
+            current += char
+        elif current:
+            digits.append(current)
+            current = ""
+    if current:
+        digits.append(current)
+    if not digits:
+        return None
+    return tuple(int(part) for part in digits)
 
 
 def split_instruments(value: str) -> list[str]:
@@ -88,6 +114,8 @@ class VersionInput:
     algo_version: str
     description: str
     worker: str
+    sw_description: str = ""
+    algo_description: str = ""
 
 
 def now_text() -> str:
@@ -105,11 +133,58 @@ def downtime_duration(issue_time: str, end_time: datetime | None = None) -> str:
     return f"{hours:02d}:{remaining_minutes:02d}"
 
 
+def clean_source_metadata(value: str | None) -> str:
+    if not value:
+        return ""
+    metadata_patterns = [
+        re.compile(r"^\s*Source\s+No\.?\s*:.*$", re.IGNORECASE),
+        re.compile(r"^\s*Original\s+Vision\s*:.*$", re.IGNORECASE),
+    ]
+    kept_lines = [
+        line
+        for line in str(value).splitlines()
+        if not any(pattern.match(line) for pattern in metadata_patterns)
+    ]
+    cleaned = "\n".join(kept_lines).strip()
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def clean_issue_source_metadata(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, description, resolution_notes
+        FROM issues
+        WHERE COALESCE(description, '') LIKE '%Source No%'
+           OR COALESCE(description, '') LIKE '%Original Vision%'
+           OR COALESCE(resolution_notes, '') LIKE '%Source No%'
+           OR COALESCE(resolution_notes, '') LIKE '%Original Vision%'
+        """
+    ).fetchall()
+    for row in rows:
+        description = clean_source_metadata(row["description"])
+        resolution_notes = clean_source_metadata(row["resolution_notes"])
+        if description != (row["description"] or "") or resolution_notes != (row["resolution_notes"] or ""):
+            conn.execute(
+                """
+                UPDATE issues
+                SET description = ?, resolution_notes = ?
+                WHERE id = ?
+                """,
+                (description, resolution_notes, row["id"]),
+            )
 
 
 def initialize_database(db_path: Path = DB_PATH) -> None:
@@ -183,10 +258,15 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
             ON version_history(line, instrument, group_name, update_time)
             """
         )
+        ensure_column(conn, "version_templates", "sw_description", "TEXT")
+        ensure_column(conn, "version_templates", "algo_description", "TEXT")
+        ensure_column(conn, "version_history", "sw_description", "TEXT")
+        ensure_column(conn, "version_history", "algo_description", "TEXT")
         conn.execute("UPDATE issues SET status = 'Action Required' WHERE status = 'Open'")
         conn.execute("UPDATE issues SET status = 'Monitoring' WHERE status = 'In Progress'")
         conn.execute("UPDATE issues SET subcategory = 'Overkill' WHERE subcategory = 'Overkill(False Reject)'")
         conn.execute("UPDATE issues SET subcategory = 'Underkill' WHERE subcategory = 'Underkill(False Accept)'")
+        clean_issue_source_metadata(conn)
         conn.commit()
 
 
@@ -343,9 +423,10 @@ def validate_version_update(version: VersionInput) -> list[str]:
         "Line": version.line,
         "Instrument": version.instrument,
         "SW Version": version.sw_version,
-        "Algo Version": version.algo_version,
         "Worker": version.worker,
     }
+    if instrument_uses_algo(version.instrument):
+        required["Algo Version"] = version.algo_version
     for label, value in required.items():
         if not value.strip():
             errors.append(f"{label} is required.")
@@ -364,6 +445,69 @@ def validate_version_update(version: VersionInput) -> list[str]:
     return errors
 
 
+def split_version_description(description: str | None) -> tuple[str, str]:
+    value = (description or "").strip()
+    sw_marker = "[SW Description]"
+    algo_marker = "[Algo Description]"
+    if sw_marker in value or algo_marker in value:
+        sw_text = value
+        algo_text = ""
+        if sw_marker in value:
+            sw_text = value.split(sw_marker, 1)[1]
+        if algo_marker in sw_text:
+            sw_text, algo_text = sw_text.split(algo_marker, 1)
+        elif algo_marker in value:
+            _, algo_text = value.split(algo_marker, 1)
+        return sw_text.strip(), algo_text.strip()
+    return value, ""
+
+
+def combine_version_description(sw_description: str, algo_description: str, uses_algo: bool) -> str:
+    sw_text = sw_description.strip()
+    algo_text = algo_description.strip()
+    if not uses_algo:
+        return sw_text
+    parts = []
+    if sw_text:
+        parts.append(f"[SW Description]\n{sw_text}")
+    if algo_text:
+        parts.append(f"[Algo Description]\n{algo_text}")
+    return "\n\n".join(parts)
+
+
+def version_description_parts(row: sqlite3.Row) -> tuple[str, str]:
+    keys = set(row.keys())
+    fallback_sw, fallback_algo = split_version_description(row["description"] if "description" in keys else "")
+    sw_description = (row["sw_description"] or "").strip() if "sw_description" in keys else ""
+    algo_description = (row["algo_description"] or "").strip() if "algo_description" in keys else ""
+    if not sw_description:
+        sw_description = fallback_sw
+    if not algo_description:
+        algo_description = fallback_algo
+    if sw_description or algo_description:
+        return sw_description, algo_description
+    return "", ""
+
+
+def refresh_combined_version_descriptions(conn: sqlite3.Connection, table_name: str, group_name: str) -> None:
+    rows = conn.execute(
+        f"""
+        SELECT id, description, sw_description, algo_description
+        FROM {table_name}
+        WHERE group_name = ?
+        """,
+        (group_name,),
+    ).fetchall()
+    uses_algo = version_group_uses_algo(group_name)
+    for row in rows:
+        sw_description, algo_description = version_description_parts(row)
+        combined = combine_version_description(sw_description, algo_description, uses_algo)
+        conn.execute(
+            f"UPDATE {table_name} SET description = ? WHERE id = ?",
+            (combined, row["id"]),
+        )
+
+
 def save_version_template(
     group_name: str,
     sw_version: str,
@@ -371,40 +515,91 @@ def save_version_template(
     description: str,
     worker: str,
     db_path: Path = DB_PATH,
+    sw_description: str | None = None,
+    algo_description: str | None = None,
 ) -> int:
     if group_name not in VERSION_GROUPS:
         raise ValueError("Version group is not valid.")
-    if not sw_version.strip() or not algo_version.strip():
-        raise ValueError("SW Version and Algo Version are required.")
+    if not sw_version.strip():
+        raise ValueError("SW Version is required.")
+    if version_group_uses_algo(group_name) and not algo_version.strip():
+        raise ValueError("Algo Version is required.")
+    if sw_description is None and algo_description is None:
+        sw_description_value, algo_description_value = split_version_description(description)
+    else:
+        sw_description_value = (sw_description or "").strip()
+        algo_description_value = (algo_description or "").strip()
+    if not version_group_uses_algo(group_name):
+        algo_description_value = ""
+    combined_description = (
+        combine_version_description(
+            sw_description_value,
+            algo_description_value,
+            version_group_uses_algo(group_name),
+        )
+        or description
+    )
     timestamp = now_text()
     with closing(connect(db_path)) as conn:
         existing = conn.execute(
             """
-            SELECT id FROM version_templates
+            SELECT id, description, sw_description, algo_description FROM version_templates
             WHERE group_name = ? AND sw_version = ? AND algo_version = ?
             ORDER BY id DESC LIMIT 1
             """,
             (group_name, sw_version.strip(), algo_version.strip()),
         ).fetchone()
         if existing:
+            existing_sw_description, existing_algo_description = version_description_parts(existing)
+            if not sw_description_value:
+                sw_description_value = existing_sw_description
+            if version_group_uses_algo(group_name) and not algo_description_value:
+                algo_description_value = existing_algo_description
+            combined_description = (
+                combine_version_description(
+                    sw_description_value,
+                    algo_description_value,
+                    version_group_uses_algo(group_name),
+                )
+                or existing["description"]
+                or description
+            )
             conn.execute(
                 """
                 UPDATE version_templates
-                SET description = ?, worker = ?, updated_at = ?
+                SET description = ?, sw_description = ?, algo_description = ?, worker = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (description, worker, timestamp, existing["id"]),
+                (
+                    combined_description,
+                    sw_description_value,
+                    algo_description_value,
+                    worker,
+                    timestamp,
+                    existing["id"],
+                ),
             )
             conn.commit()
             return int(existing["id"])
         cursor = conn.execute(
             """
             INSERT INTO version_templates (
-                group_name, sw_version, algo_version, description, worker, created_at, updated_at
+                group_name, sw_version, algo_version, description, sw_description, algo_description,
+                worker, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (group_name, sw_version.strip(), algo_version.strip(), description, worker, timestamp, timestamp),
+            (
+                group_name,
+                sw_version.strip(),
+                algo_version.strip(),
+                combined_description,
+                sw_description_value,
+                algo_description_value,
+                worker,
+                timestamp,
+                timestamp,
+            ),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -415,7 +610,8 @@ def recent_version_templates(group_name: str, limit: int = 3, db_path: Path = DB
         return list(
             conn.execute(
                 """
-                SELECT id, group_name, sw_version, algo_version, description, worker, created_at, updated_at
+                SELECT id, group_name, sw_version, algo_version, description, sw_description,
+                       algo_description, worker, created_at, updated_at
                 FROM version_templates
                 WHERE group_name = ?
                 ORDER BY updated_at DESC, id DESC
@@ -430,12 +626,134 @@ def get_version_template(template_id: int, db_path: Path = DB_PATH) -> sqlite3.R
     with closing(connect(db_path)) as conn:
         return conn.execute(
             """
-            SELECT id, group_name, sw_version, algo_version, description, worker, created_at, updated_at
+            SELECT id, group_name, sw_version, algo_version, description, sw_description,
+                   algo_description, worker, created_at, updated_at
             FROM version_templates
             WHERE id = ?
             """,
             (template_id,),
         ).fetchone()
+
+
+def version_component_templates(
+    group_name: str,
+    component: str,
+    limit: int = 50,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, str]]:
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if component == "algo" and not version_group_uses_algo(group_name):
+        return []
+
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, group_name, sw_version, algo_version, description, sw_description,
+                   algo_description, worker, created_at, updated_at
+            FROM version_templates
+            WHERE group_name = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (group_name,),
+        ).fetchall()
+
+    templates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        version = (row[version_column] or "").strip()
+        if not version or version in seen:
+            continue
+        sw_description, algo_description = version_description_parts(row)
+        templates.append(
+            {
+                "id": str(row["id"]),
+                "group_name": row["group_name"],
+                "component": component,
+                "version": version,
+                "description": sw_description if component == "sw" else algo_description,
+                "worker": row["worker"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+        seen.add(version)
+        if len(templates) >= limit:
+            break
+    return templates
+
+
+def update_version_component_template(
+    group_name: str,
+    component: str,
+    old_version: str,
+    new_version: str,
+    description: str,
+    worker: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if component == "algo" and not version_group_uses_algo(group_name):
+        raise ValueError("This version group does not use Algo versions.")
+    if not old_version.strip():
+        raise ValueError("Select a version first.")
+    if not new_version.strip():
+        raise ValueError("Version is required.")
+
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    description_column = "sw_description" if component == "sw" else "algo_description"
+    timestamp = now_text()
+    with closing(connect(db_path)) as conn:
+        conn.execute(
+            f"""
+            UPDATE version_templates
+            SET {version_column} = ?, {description_column} = ?, worker = ?, updated_at = ?
+            WHERE group_name = ? AND {version_column} = ?
+            """,
+            (new_version.strip(), description, worker, timestamp, group_name, old_version.strip()),
+        )
+        conn.execute(
+            f"""
+            UPDATE version_history
+            SET {version_column} = ?, {description_column} = ?, worker = ?
+            WHERE group_name = ? AND {version_column} = ?
+            """,
+            (new_version.strip(), description, worker, group_name, old_version.strip()),
+        )
+        refresh_combined_version_descriptions(conn, "version_templates", group_name)
+        refresh_combined_version_descriptions(conn, "version_history", group_name)
+        conn.commit()
+
+
+def delete_version_component_template(
+    group_name: str,
+    component: str,
+    version: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if not version.strip():
+        return
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    with closing(connect(db_path)) as conn:
+        conn.execute(
+            f"DELETE FROM version_templates WHERE group_name = ? AND {version_column} = ?",
+            (group_name, version.strip()),
+        )
+        conn.execute(
+            f"DELETE FROM version_history WHERE group_name = ? AND {version_column} = ?",
+            (group_name, version.strip()),
+        )
+        conn.commit()
 
 
 def update_version_template(
@@ -446,8 +764,8 @@ def update_version_template(
     worker: str,
     db_path: Path = DB_PATH,
 ) -> None:
-    if not sw_version.strip() or not algo_version.strip():
-        raise ValueError("SW Version and Algo Version are required.")
+    if not sw_version.strip():
+        raise ValueError("SW Version is required.")
     timestamp = now_text()
     with closing(connect(db_path)) as conn:
         row = conn.execute(
@@ -460,24 +778,42 @@ def update_version_template(
         ).fetchone()
         if row is None:
             raise ValueError("Version template was not found.")
+        if version_group_uses_algo(row["group_name"]) and not algo_version.strip():
+            raise ValueError("Algo Version is required.")
+        sw_description, algo_description = split_version_description(description)
+        if not version_group_uses_algo(row["group_name"]):
+            algo_description = ""
         conn.execute(
             """
             UPDATE version_templates
-            SET sw_version = ?, algo_version = ?, description = ?, worker = ?, updated_at = ?
+            SET sw_version = ?, algo_version = ?, description = ?, sw_description = ?,
+                algo_description = ?, worker = ?, updated_at = ?
             WHERE id = ?
             """,
-            (sw_version.strip(), algo_version.strip(), description, worker, timestamp, template_id),
+            (
+                sw_version.strip(),
+                algo_version.strip(),
+                description,
+                sw_description,
+                algo_description,
+                worker,
+                timestamp,
+                template_id,
+            ),
         )
         conn.execute(
             """
             UPDATE version_history
-            SET sw_version = ?, algo_version = ?, description = ?, worker = ?
+            SET sw_version = ?, algo_version = ?, description = ?, sw_description = ?,
+                algo_description = ?, worker = ?
             WHERE group_name = ? AND sw_version = ? AND algo_version = ?
             """,
             (
                 sw_version.strip(),
                 algo_version.strip(),
                 description,
+                sw_description,
+                algo_description,
                 worker,
                 row["group_name"],
                 row["sw_version"],
@@ -529,13 +865,63 @@ def latest_version_by_instrument(db_path: Path = DB_PATH) -> dict[tuple[str, str
         return {(row["line"], row["instrument"]): row for row in rows}
 
 
+def version_history_component_flags(row: sqlite3.Row) -> tuple[bool, bool]:
+    sw_description, algo_description = version_description_parts(row)
+    has_component_description = bool(sw_description or algo_description)
+    sw_touched = bool(sw_description) or not has_component_description
+    algo_touched = bool(algo_description) or not has_component_description
+    return sw_touched, algo_touched
+
+
+def latest_dashboard_versions(db_path: Path = DB_PATH) -> dict[tuple[str, str], dict[str, str]]:
+    states: dict[tuple[str, str], dict[str, str]] = {}
+    with closing(connect(db_path)) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, created_at, update_time, group_name, line, instrument, sw_version,
+                   algo_version, description, sw_description, algo_description, worker, created_issue_id
+            FROM version_history
+            ORDER BY update_time ASC, id ASC
+            """
+        ).fetchall()
+
+    for row in rows:
+        key = (row["line"], row["instrument"])
+        state = states.setdefault(
+            key,
+            {
+                "line": row["line"],
+                "instrument": row["instrument"],
+                "group_name": row["group_name"],
+                "sw_version": "",
+                "algo_version": "",
+                "update_time": "",
+                "sw_update_time": "",
+                "algo_update_time": "",
+            },
+        )
+        sw_touched, algo_touched = version_history_component_flags(row)
+        if sw_touched:
+            state["sw_version"] = row["sw_version"] or ""
+            state["sw_update_time"] = row["update_time"] or ""
+            state["group_name"] = row["group_name"]
+            state["update_time"] = row["update_time"] or state["update_time"]
+        if instrument_uses_algo(row["instrument"]) and algo_touched:
+            state["algo_version"] = row["algo_version"] or ""
+            state["algo_update_time"] = row["update_time"] or ""
+            state["group_name"] = row["group_name"]
+            state["update_time"] = row["update_time"] or state["update_time"]
+    return states
+
+
 def version_history_rows(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
     with closing(connect(db_path)) as conn:
         return list(
             conn.execute(
                 """
                 SELECT id, update_time, group_name, line, instrument, sw_version,
-                       algo_version, description, worker, created_issue_id
+                       algo_version, description, sw_description, algo_description,
+                       worker, created_issue_id
                 FROM version_history
                 ORDER BY update_time DESC, id DESC
                 """
@@ -545,7 +931,7 @@ def version_history_rows(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
 
 def export_version_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    latest = latest_version_by_instrument(db_path)
+    latest = latest_dashboard_versions(db_path)
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Version Dashboard"
@@ -557,8 +943,6 @@ def export_version_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH
         "SW Version",
         "Algo Version",
         "Last Updated",
-        "Logged By",
-        "Description",
     ]
     sheet.append(headers)
 
@@ -577,8 +961,6 @@ def export_version_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH
                     row["sw_version"] if row else "",
                     row["algo_version"] if row else "",
                     row["update_time"] if row else "",
-                    row["worker"] if row else "",
-                    row["description"] if row else "",
                 ]
             )
 
@@ -601,16 +983,36 @@ def create_version_update(
     if errors:
         raise ValueError("\n".join(errors))
 
+    sw_description = version.sw_description.strip()
+    algo_description = version.algo_description.strip()
+    if not sw_description and not algo_description:
+        sw_description, algo_description = split_version_description(version.description)
+    if not version_group_uses_algo(version.group_name):
+        algo_description = ""
+    description = (
+        combine_version_description(
+            sw_description,
+            algo_description,
+            version_group_uses_algo(version.group_name),
+        )
+        or version.description
+    )
+
     save_version_template(
         version.group_name,
         version.sw_version,
         version.algo_version,
-        version.description,
+        description,
         version.worker,
         db_path,
+        sw_description=sw_description,
+        algo_description=algo_description,
     )
     created_issue_id: int | None = None
     if create_program_update_issue:
+        version_text = f"SW {version.sw_version}"
+        if instrument_uses_algo(version.instrument):
+            version_text = f"{version_text} / Algo {version.algo_version}"
         issue = IssueInput(
             issue_time=version.update_time,
             resolved_time="00:00",
@@ -619,8 +1021,8 @@ def create_version_update(
             worker=version.worker,
             category="Software",
             subcategory="Program Update",
-            title=f"Program Update - {version.line} {version.instrument} SW {version.sw_version} / Algo {version.algo_version}",
-            description=version.description,
+            title=f"Program Update - {version.line} {version.instrument} {version_text}",
+            description=description,
             status="Monitoring",
         )
         created_issue_id = create_issue(issue, db_path)
@@ -630,9 +1032,9 @@ def create_version_update(
             """
             INSERT INTO version_history (
                 created_at, update_time, group_name, line, instrument, sw_version,
-                algo_version, description, worker, created_issue_id
+                algo_version, description, sw_description, algo_description, worker, created_issue_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now_text(),
@@ -642,7 +1044,9 @@ def create_version_update(
                 version.instrument,
                 version.sw_version,
                 version.algo_version,
-                version.description,
+                description,
+                sw_description,
+                algo_description,
                 version.worker,
                 created_issue_id,
             ),
@@ -780,32 +1184,57 @@ def export_issues_to_excel(rows: list[sqlite3.Row], output_path: Path) -> None:
 
     headers = [
         "ID",
-        "Issue Time",
-        "Downtime Duration",
         "Line",
         "Instrument",
-        "Logged By",
+        "Issue Time",
+        "Downtime",
         "Category",
-        "Subcategory",
         "Title",
         "Status",
         "Description",
         "Resolution Notes",
     ]
     sheet.append(headers)
+    hidden_headers = {"Downtime"}
+    wrapped_headers = {"Description", "Resolution Notes"}
+    fixed_widths = {
+        "Title": 48,
+        "Description": 48,
+        "Resolution Notes": 113.57,  # Excel column width equivalent for roughly 800 px.
+    }
 
     for cell in sheet[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(vertical="top")
 
     for row_number, row in enumerate(rows, start=1):
-        sheet.append([row_number if header == "ID" else row[header_key(header)] for header in headers])
+        values = []
+        for header in headers:
+            if header == "ID":
+                values.append(row_number)
+                continue
+            value = row[header_key(header)]
+            if header in wrapped_headers:
+                value = clean_source_metadata(value)
+            values.append(value)
+        sheet.append(values)
 
     for column_index, header in enumerate(headers, start=1):
+        column_letter = get_column_letter(column_index)
         max_length = len(header)
-        for cell in sheet[get_column_letter(column_index)]:
+        for cell in sheet[column_letter]:
             max_length = max(max_length, len(str(cell.value or "")))
-        sheet.column_dimensions[get_column_letter(column_index)].width = min(max_length + 2, 48)
+            if header in wrapped_headers:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+            else:
+                cell.alignment = Alignment(vertical="top")
+        if header in fixed_widths:
+            sheet.column_dimensions[column_letter].width = fixed_widths[header]
+        else:
+            sheet.column_dimensions[column_letter].width = max_length + 2
+        if header in hidden_headers:
+            sheet.column_dimensions[column_letter].hidden = True
 
     sheet.freeze_panes = "A2"
     workbook.save(output_path)
@@ -814,13 +1243,11 @@ def export_issues_to_excel(rows: list[sqlite3.Row], output_path: Path) -> None:
 def header_key(header: str) -> str:
     return {
         "ID": "id",
-        "Issue Time": "issue_time",
-        "Downtime Duration": "resolved_time",
         "Line": "line",
         "Instrument": "instrument",
-        "Logged By": "worker",
+        "Issue Time": "issue_time",
+        "Downtime": "resolved_time",
         "Category": "category",
-        "Subcategory": "subcategory",
         "Title": "title",
         "Status": "status",
         "Description": "description",
