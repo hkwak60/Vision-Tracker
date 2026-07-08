@@ -384,6 +384,61 @@ def run_tests() -> None:
         assert dashboard_versions[("1-1", "Welding(+)")]["algo_version"] == "ALG-2.2.0"
         assert dashboard_versions[("1-1", "Welding(-)")]["sw_version"] == "SW-1.0.0"
 
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-20 09:00",
+                group_name="Welding",
+                line="2-1",
+                instrument="Welding(+)",
+                sw_version="SW-0.8.0",
+                algo_version="ALG-0.8.0",
+                description="Later dated old current record.",
+                worker="Jihoon Yun",
+            ),
+            False,
+            db_path,
+        )
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-21 09:00",
+                group_name="Welding",
+                line="2-2",
+                instrument="Welding(+)",
+                sw_version="SW-1.9.0",
+                algo_version="ALG-1.9.0",
+                description="[SW Description]\nStored SW detail.\n\n[Algo Description]\nStored Algo detail.",
+                worker="Jihoon Yun",
+            ),
+            False,
+            db_path,
+        )
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-15 09:00",
+                group_name="Welding",
+                line="2-1",
+                instrument="Welding(+)",
+                sw_version="SW-1.9.0",
+                algo_version="ALG-1.9.0",
+                description="",
+                worker="Jihoon Yun",
+            ),
+            False,
+            db_path,
+        )
+        dashboard_versions = latest_dashboard_versions(db_path)
+        assert dashboard_versions[("2-1", "Welding(+)")]["sw_version"] == "SW-1.9.0"
+        assert dashboard_versions[("2-1", "Welding(+)")]["algo_version"] == "ALG-1.9.0"
+        backdated_history = [
+            row
+            for row in version_history_rows(db_path)
+            if row["line"] == "2-1" and row["instrument"] == "Welding(+)" and row["sw_version"] == "SW-1.9.0"
+        ][0]
+        assert backdated_history["sw_touched"] == 1
+        assert backdated_history["algo_touched"] == 1
+        assert "Stored SW detail." in backdated_history["description"]
+        assert "Stored Algo detail." in backdated_history["description"]
+
         assert version_sort_key("260522.1450") == (260522, 1450)
         assert version_sort_key("1.2.3.4") == (1, 2, 3, 4)
         create_version_update(

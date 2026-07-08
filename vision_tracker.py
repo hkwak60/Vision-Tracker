@@ -262,6 +262,10 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
         ensure_column(conn, "version_templates", "algo_description", "TEXT")
         ensure_column(conn, "version_history", "sw_description", "TEXT")
         ensure_column(conn, "version_history", "algo_description", "TEXT")
+        ensure_column(conn, "version_history", "sw_touched", "INTEGER")
+        ensure_column(conn, "version_history", "algo_touched", "INTEGER")
+        backfill_version_history_component_flags(conn)
+        backfill_version_history_descriptions(conn)
         conn.execute("UPDATE issues SET status = 'Action Required' WHERE status = 'Open'")
         conn.execute("UPDATE issues SET status = 'Monitoring' WHERE status = 'In Progress'")
         conn.execute("UPDATE issues SET subcategory = 'Overkill' WHERE subcategory = 'Overkill(False Reject)'")
@@ -489,6 +493,115 @@ def version_description_parts(row: sqlite3.Row) -> tuple[str, str]:
     return "", ""
 
 
+def infer_version_history_component_flags(row: sqlite3.Row) -> tuple[bool, bool]:
+    sw_description, algo_description = version_description_parts(row)
+    uses_algo = True
+    keys = set(row.keys())
+    if "instrument" in keys:
+        uses_algo = instrument_uses_algo(row["instrument"])
+    elif "group_name" in keys:
+        uses_algo = version_group_uses_algo(row["group_name"])
+
+    if not uses_algo:
+        return True, False
+    if sw_description and not algo_description:
+        return True, False
+    if algo_description and not sw_description:
+        return False, True
+    return True, True
+
+
+def backfill_version_history_component_flags(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, group_name, instrument, description, sw_description, algo_description,
+               sw_touched, algo_touched
+        FROM version_history
+        WHERE sw_touched IS NULL OR algo_touched IS NULL
+        """
+    ).fetchall()
+    for row in rows:
+        sw_touched, algo_touched = infer_version_history_component_flags(row)
+        conn.execute(
+            """
+            UPDATE version_history
+            SET sw_touched = ?, algo_touched = ?
+            WHERE id = ?
+            """,
+            (1 if sw_touched else 0, 1 if algo_touched else 0, row["id"]),
+        )
+
+
+def version_component_description_from_templates(
+    conn: sqlite3.Connection,
+    group_name: str,
+    component: str,
+    version: str,
+) -> str:
+    if not version.strip():
+        return ""
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    rows = conn.execute(
+        f"""
+        SELECT description, sw_description, algo_description
+        FROM version_templates
+        WHERE group_name = ? AND {version_column} = ?
+        ORDER BY updated_at DESC, id DESC
+        """,
+        (group_name, version.strip()),
+    ).fetchall()
+    for row in rows:
+        sw_description, algo_description = version_description_parts(row)
+        description = sw_description if component == "sw" else algo_description
+        if description:
+            return description
+    return ""
+
+
+def backfill_version_history_descriptions(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, group_name, instrument, sw_version, algo_version, description,
+               sw_description, algo_description, sw_touched, algo_touched
+        FROM version_history
+        WHERE COALESCE(description, '') = ''
+           OR COALESCE(sw_description, '') = ''
+           OR COALESCE(algo_description, '') = ''
+        """
+    ).fetchall()
+    for row in rows:
+        sw_description, algo_description = version_description_parts(row)
+        sw_touched, algo_touched = version_history_component_flags(row)
+        if sw_touched and not sw_description:
+            sw_description = version_component_description_from_templates(
+                conn, row["group_name"], "sw", row["sw_version"]
+            )
+        if algo_touched and not algo_description:
+            algo_description = version_component_description_from_templates(
+                conn, row["group_name"], "algo", row["algo_version"]
+            )
+        if not version_group_uses_algo(row["group_name"]):
+            algo_description = ""
+        description = combine_version_description(
+            sw_description,
+            algo_description,
+            version_group_uses_algo(row["group_name"]),
+        )
+        if (
+            description != (row["description"] or "")
+            or sw_description != (row["sw_description"] or "")
+            or algo_description != (row["algo_description"] or "")
+        ):
+            conn.execute(
+                """
+                UPDATE version_history
+                SET description = ?, sw_description = ?, algo_description = ?
+                WHERE id = ?
+                """,
+                (description, sw_description, algo_description, row["id"]),
+            )
+
+
 def refresh_combined_version_descriptions(conn: sqlite3.Connection, table_name: str, group_name: str) -> None:
     rows = conn.execute(
         f"""
@@ -531,16 +644,24 @@ def save_version_template(
         algo_description_value = (algo_description or "").strip()
     if not version_group_uses_algo(group_name):
         algo_description_value = ""
-    combined_description = (
-        combine_version_description(
-            sw_description_value,
-            algo_description_value,
-            version_group_uses_algo(group_name),
-        )
-        or description
-    )
     timestamp = now_text()
     with closing(connect(db_path)) as conn:
+        if not sw_description_value:
+            sw_description_value = version_component_description_from_templates(
+                conn, group_name, "sw", sw_version
+            )
+        if version_group_uses_algo(group_name) and not algo_description_value:
+            algo_description_value = version_component_description_from_templates(
+                conn, group_name, "algo", algo_version
+            )
+        combined_description = (
+            combine_version_description(
+                sw_description_value,
+                algo_description_value,
+                version_group_uses_algo(group_name),
+            )
+            or description
+        )
         existing = conn.execute(
             """
             SELECT id, description, sw_description, algo_description FROM version_templates
@@ -866,11 +987,21 @@ def latest_version_by_instrument(db_path: Path = DB_PATH) -> dict[tuple[str, str
 
 
 def version_history_component_flags(row: sqlite3.Row) -> tuple[bool, bool]:
-    sw_description, algo_description = version_description_parts(row)
-    has_component_description = bool(sw_description or algo_description)
-    sw_touched = bool(sw_description) or not has_component_description
-    algo_touched = bool(algo_description) or not has_component_description
-    return sw_touched, algo_touched
+    keys = set(row.keys())
+    if (
+        "sw_touched" in keys
+        and "algo_touched" in keys
+        and row["sw_touched"] is not None
+        and row["algo_touched"] is not None
+    ):
+        sw_touched = bool(row["sw_touched"])
+        algo_touched = bool(row["algo_touched"])
+        if "instrument" in keys and not instrument_uses_algo(row["instrument"]):
+            algo_touched = False
+        elif "group_name" in keys and not version_group_uses_algo(row["group_name"]):
+            algo_touched = False
+        return sw_touched, algo_touched
+    return infer_version_history_component_flags(row)
 
 
 def latest_dashboard_versions(db_path: Path = DB_PATH) -> dict[tuple[str, str], dict[str, str]]:
@@ -879,9 +1010,10 @@ def latest_dashboard_versions(db_path: Path = DB_PATH) -> dict[tuple[str, str], 
         rows = conn.execute(
             """
             SELECT id, created_at, update_time, group_name, line, instrument, sw_version,
-                   algo_version, description, sw_description, algo_description, worker, created_issue_id
+                   algo_version, description, sw_description, algo_description, worker,
+                   created_issue_id, sw_touched, algo_touched
             FROM version_history
-            ORDER BY update_time ASC, id ASC
+            ORDER BY id ASC
             """
         ).fetchall()
 
@@ -921,7 +1053,7 @@ def version_history_rows(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
                 """
                 SELECT id, update_time, group_name, line, instrument, sw_version,
                        algo_version, description, sw_description, algo_description,
-                       worker, created_issue_id
+                       sw_touched, algo_touched, worker, created_issue_id
                 FROM version_history
                 ORDER BY update_time DESC, id DESC
                 """
@@ -983,17 +1115,33 @@ def create_version_update(
     if errors:
         raise ValueError("\n".join(errors))
 
+    uses_algo = version_group_uses_algo(version.group_name)
     sw_description = version.sw_description.strip()
     algo_description = version.algo_description.strip()
     if not sw_description and not algo_description:
         sw_description, algo_description = split_version_description(version.description)
-    if not version_group_uses_algo(version.group_name):
+    if not uses_algo:
         algo_description = ""
+
+    has_entered_description = bool(sw_description or algo_description)
+    sw_touched = bool(sw_description) or not has_entered_description or not uses_algo
+    algo_touched = uses_algo and (bool(algo_description) or not has_entered_description)
+
+    with closing(connect(db_path)) as conn:
+        if sw_touched and not sw_description:
+            sw_description = version_component_description_from_templates(
+                conn, version.group_name, "sw", version.sw_version
+            )
+        if algo_touched and not algo_description:
+            algo_description = version_component_description_from_templates(
+                conn, version.group_name, "algo", version.algo_version
+            )
+
     description = (
         combine_version_description(
             sw_description,
             algo_description,
-            version_group_uses_algo(version.group_name),
+            uses_algo,
         )
         or version.description
     )
@@ -1032,9 +1180,10 @@ def create_version_update(
             """
             INSERT INTO version_history (
                 created_at, update_time, group_name, line, instrument, sw_version,
-                algo_version, description, sw_description, algo_description, worker, created_issue_id
+                algo_version, description, sw_description, algo_description,
+                sw_touched, algo_touched, worker, created_issue_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 now_text(),
@@ -1047,6 +1196,8 @@ def create_version_update(
                 description,
                 sw_description,
                 algo_description,
+                1 if sw_touched else 0,
+                1 if algo_touched else 0,
                 version.worker,
                 created_issue_id,
             ),
