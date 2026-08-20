@@ -22,6 +22,7 @@ from vision_tracker import (
     CATEGORY_MAP,
     INSTRUMENTS,
     INSTRUMENT_GROUP,
+    INSTRUMENT_SEPARATOR,
     LINES,
     STATUS_OPTIONS,
     VERSION_GROUPS,
@@ -31,6 +32,7 @@ from vision_tracker import (
     active_issues,
     create_version_update,
     create_issue,
+    create_issues_for_lines,
     delete_issue,
     delete_version_component_template,
     export_issues_to_excel,
@@ -192,8 +194,9 @@ class VisionIssueApp(tk.Tk):
         self.issue_minute_var = tk.StringVar()
         self.resolved_time_var = tk.StringVar(value="00:00")
         self.line_var = tk.StringVar(value=LINES[0])
-        self.instrument_var = tk.StringVar(value=INSTRUMENTS[0])
-        self.selected_instruments = {INSTRUMENTS[0]}
+        self.selected_lines = {LINES[0]}
+        self.instrument_var = tk.StringVar(value="")
+        self.selected_instruments: set[str] = set()
         self.category_var = tk.StringVar(value=CATEGORIES[0])
         self.subcategory_var = tk.StringVar(value=CATEGORY_MAP[CATEGORIES[0]][0])
         self.status_var = tk.StringVar(value=ACTIVE_STATUS_OPTIONS[0])
@@ -492,6 +495,7 @@ class VisionIssueApp(tk.Tk):
         self.render_issue_form("edit")
 
     def render_issue_form(self, mode: str) -> None:
+        self.issue_form_mode = mode
         self.clear_board_side_panel()
         form_title = "Create Issue" if mode == "create" else "Edit Issue"
         save_title = "Create Issue" if mode == "create" else "Save Changes"
@@ -573,11 +577,22 @@ class VisionIssueApp(tk.Tk):
             self.line_instrument_traces_added = True
         self.refresh_line_instrument_buttons()
 
+    def format_lines(self, values: list[str] | tuple[str, ...] | set[str]) -> str:
+        ordered = [line for line in LINES if line in values]
+        return INSTRUMENT_SEPARATOR.join(ordered)
+
     def select_line(self, line: str) -> None:
-        self.line_var.set(line)
+        if getattr(self, "issue_form_mode", "create") == "create":
+            if line in self.selected_lines and len(self.selected_lines) > 1:
+                self.selected_lines.remove(line)
+            else:
+                self.selected_lines.add(line)
+        else:
+            self.selected_lines = {line}
+        self.line_var.set(self.format_lines(self.selected_lines))
 
     def select_instrument(self, instrument: str) -> None:
-        if instrument in self.selected_instruments and len(self.selected_instruments) > 1:
+        if instrument in self.selected_instruments:
             self.selected_instruments.remove(instrument)
         else:
             self.selected_instruments.add(instrument)
@@ -589,17 +604,14 @@ class VisionIssueApp(tk.Tk):
         default_bg = self.cget("bg")
         default_fg = "#111827"
         for line, button in getattr(self, "line_buttons", {}).items():
-            is_selected = line == self.line_var.get()
+            is_selected = line in getattr(self, "selected_lines", set())
             button.configure(
                 background=selected_bg if is_selected else default_bg,
                 foreground=selected_fg if is_selected else default_fg,
                 relief="sunken" if is_selected else "raised",
             )
         current_instruments = set(split_instruments(self.instrument_var.get()))
-        self.selected_instruments = current_instruments or {INSTRUMENTS[0]}
-        if not current_instruments:
-            self.instrument_var.set(format_instruments(self.selected_instruments))
-            return
+        self.selected_instruments = current_instruments
         for instrument, button in getattr(self, "instrument_buttons", {}).items():
             is_selected = instrument in current_instruments
             button.configure(
@@ -1646,8 +1658,12 @@ class VisionIssueApp(tk.Tk):
         try:
             issue = self.form_issue()
             if self.selected_issue_id is None:
-                saved_id = create_issue(issue)
-                messagebox.showinfo(APP_TITLE, "Issue saved.")
+                saved_ids = create_issues_for_lines(issue, self.selected_lines)
+                saved_id = saved_ids[-1]
+                if len(saved_ids) == 1:
+                    messagebox.showinfo(APP_TITLE, "Issue saved.")
+                else:
+                    messagebox.showinfo(APP_TITLE, f"{len(saved_ids)} issues saved.")
             else:
                 update_issue(self.selected_issue_id, issue)
                 saved_id = self.selected_issue_id
@@ -1665,9 +1681,10 @@ class VisionIssueApp(tk.Tk):
         self.current_worker_var.set(WORKERS[0])
         self.set_issue_datetime(now_text())
         self.resolved_time_var.set("00:00")
+        self.selected_lines = {LINES[0]}
         self.line_var.set(LINES[0])
-        self.selected_instruments = {INSTRUMENTS[0]}
-        self.instrument_var.set(INSTRUMENTS[0])
+        self.selected_instruments = set()
+        self.instrument_var.set("")
         self.category_var.set(CATEGORIES[0])
         self.update_subcategories()
         self.status_var.set(ACTIVE_STATUS_OPTIONS[0])
@@ -1891,7 +1908,9 @@ class VisionIssueApp(tk.Tk):
         self.current_worker_var.set(row["worker"] or WORKERS[0])
         self.set_issue_datetime(row["issue_time"])
         self.resolved_time_var.set(row["resolved_time"] or "00:00")
+        self.selected_lines = {row["line"]}
         self.line_var.set(row["line"])
+        self.selected_instruments = set(split_instruments(row["instrument"]))
         self.instrument_var.set(row["instrument"])
         self.category_var.set(row["category"])
         self.update_subcategories()

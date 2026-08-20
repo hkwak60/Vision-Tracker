@@ -4,7 +4,7 @@ import sqlite3
 import sys
 import re
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,12 +29,12 @@ INSTRUMENTS = [
     "Welding(-)",
 ]
 INSTRUMENT_SEPARATOR = " / "
-WORKERS = ["Hojun Kwak", "Kijung Kim", "Jihoon Yun", "Jisub Yun"]
+WORKERS = ["Hojun Kwak", "Kijung Kim", "Jihoon Yun", "Jisub Yun", "Seongwon Park"]
 ACTIVE_STATUS_OPTIONS = ["Action Required", "Monitoring"]
 STATUS_OPTIONS = ACTIVE_STATUS_OPTIONS + ["Resolved"]
 CATEGORY_MAP = {
     "Hardware": ["Camera", "Lighting"],
-    "Software": ["Program Crash", "Program Update", "UI", "PLC", "Other"],
+    "Software": ["Program Crash", "Program Update", "Mavin Model Update", "UI", "PLC", "Other"],
     "Recipe": ["Overkill", "Underkill", "Add Measure", "Bypass/Unbypass"],
     "Camera Grab Fail": [""],
     "Production": [""],
@@ -372,6 +372,20 @@ def create_issue(issue: IssueInput, db_path: Path = DB_PATH) -> int:
         )
         conn.commit()
         return int(cursor.lastrowid)
+
+
+def create_issues_for_lines(issue: IssueInput, lines: list[str] | tuple[str, ...] | set[str], db_path: Path = DB_PATH) -> list[int]:
+    requested_lines = [line.strip() for line in lines if line.strip()]
+    if not requested_lines:
+        raise ValueError("Line is required.")
+    invalid_lines = [line for line in requested_lines if line not in LINES]
+    if invalid_lines:
+        raise ValueError("Line is not valid.")
+    selected_lines = [line for line in LINES if line in requested_lines]
+    ids: list[int] = []
+    for line in selected_lines:
+        ids.append(create_issue(replace(issue, line=line), db_path))
+    return ids
 
 
 def update_issue(issue_id: int, issue: IssueInput, db_path: Path = DB_PATH) -> None:

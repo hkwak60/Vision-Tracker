@@ -9,6 +9,7 @@ from vision_tracker import (
     active_issues,
     create_version_update,
     create_issue,
+    create_issues_for_lines,
     delete_version_component_template,
     dashboard_counts,
     delete_issue,
@@ -181,6 +182,27 @@ def run_tests() -> None:
         first_time, latest_time = issue_time_bounds(db_path)
         assert first_time == "2026-06-17 07:30"
         assert latest_time == "2026-06-17 09:00"
+
+        mavin_ids = create_issues_for_lines(
+            IssueInput(
+                issue_time="2026-06-17 09:30",
+                line="1-1",
+                instrument="Lead",
+                worker="Seongwon Park",
+                category="Software",
+                subcategory="Mavin Model Update",
+                title="Mavin model update check",
+                description="Same model update applied to multiple lines.",
+                status="Monitoring",
+            ),
+            {"1-1", "2-1"},
+            db_path,
+        )
+        assert len(mavin_ids) == 2
+        mavin_rows = search_issues({"category": "Software", "subcategory": "Mavin Model Update"}, db_path)
+        assert {row["line"] for row in mavin_rows} == {"1-1", "2-1"}
+        assert all(row["worker"] == "Seongwon Park" for row in mavin_rows)
+        assert all(row["instrument"] == "Lead" for row in mavin_rows)
 
         plc_id = create_issue(
             IssueInput(
