@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import os
 import sys
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -45,7 +46,10 @@ from vision_tracker import (
     latest_dashboard_versions,
     latest_version_by_instrument,
     now_text,
+    online_mode,
+    refresh_online_cache,
     resolve_issue,
+    save_version_component_template,
     search_issues,
     set_issue_status,
     split_instruments,
@@ -158,6 +162,10 @@ class VisionIssueApp(tk.Tk):
         self.active_issue_rows = []
         self.language_var = tk.StringVar(value="한국어")
         self.current_worker_var = tk.StringVar(value=WORKERS[0])
+        self.online_sync_running = False
+        self.sync_status_state = "local"
+        self.sync_status_detail = ""
+        self.sync_status_var = tk.StringVar(value="")
         self.translated_widgets: list[tuple[tk.Widget, str, str]] = []
 
         self.configure(bg="#f4f6f8")
@@ -166,9 +174,16 @@ class VisionIssueApp(tk.Tk):
         self.configure_styles()
 
         self.build_layout()
+        self.set_sync_status("cached" if online_mode() else "local")
         self.initialize_issue_form_state()
         self.refresh_open_issues()
-        self.search_records()
+        if online_mode():
+            self.reset_search_date_bounds()
+            self.search_records()
+            self.after(200, lambda: self.sync_online_cache_async(force_full=False, refresh_open=True, refresh_search=True, refresh_version=True, reset_bounds=True, quiet=True))
+            self.after(30000, self.periodic_online_sync)
+        else:
+            self.search_records()
 
     def configure_styles(self) -> None:
         self.style.configure("TNotebook", background="#f4f6f8", borderwidth=0)
@@ -187,6 +202,7 @@ class VisionIssueApp(tk.Tk):
         self.style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
         self.style.configure("CardTitle.TLabel", background="#ffffff", font=("Segoe UI", 9))
         self.style.configure("CardValue.TLabel", background="#ffffff", font=("Segoe UI", 20, "bold"))
+        self.style.configure("Sync.TLabel", background="#f4f6f8", font=("Segoe UI", 9, "bold"))
 
     def initialize_issue_form_state(self) -> None:
         self.issue_date_var = tk.StringVar()
@@ -212,6 +228,8 @@ class VisionIssueApp(tk.Tk):
         ttk.Label(header, text=APP_TITLE, style="Header.TLabel").pack(side="left")
         profile = ttk.Frame(header)
         profile.pack(side="right")
+        self.sync_status_label = ttk.Label(profile, textvariable=self.sync_status_var, style="Sync.TLabel")
+        self.sync_status_label.pack(side="left", padx=(0, 18))
         self.tr_label(profile, "Language").pack(side="left", padx=(0, 8))
         language_combo = ttk.Combobox(
             profile,
@@ -281,6 +299,32 @@ class VisionIssueApp(tk.Tk):
                 self.update_tree_headings(getattr(self, tree_name))
         if hasattr(self, "version_create_issue_button"):
             self.refresh_create_issue_button()
+        if hasattr(self, "sync_status_var"):
+            self.set_sync_status(self.sync_status_state, self.sync_status_detail)
+
+    def set_sync_status(self, state: str, detail: str = "") -> None:
+        self.sync_status_state = state
+        self.sync_status_detail = detail
+        korean = self.language_var.get() == "한국어"
+        if state == "syncing":
+            text = "온라인: 동기화 중..." if korean else "Online: Syncing..."
+            color = "#2563eb"
+        elif state == "synced":
+            label = "동기화 완료" if korean else "Synced"
+            text = f"온라인: {label} {detail}".rstrip() if korean else f"Online: {label} {detail}".rstrip()
+            color = "#166534"
+        elif state == "offline":
+            text = "온라인: 오프라인 - 캐시 표시" if korean else "Online: Offline - cached data"
+            color = "#b45309"
+        elif state == "cached":
+            text = "온라인: 캐시 표시" if korean else "Online: Cached data"
+            color = "#475569"
+        else:
+            text = "로컬 모드" if korean else "Local mode"
+            color = "#475569"
+        self.sync_status_var.set(text)
+        if hasattr(self, "sync_status_label"):
+            self.sync_status_label.configure(foreground=color)
 
     def update_tree_headings(self, tree: ttk.Treeview) -> None:
         headings = {
@@ -300,7 +344,7 @@ class VisionIssueApp(tk.Tk):
     def build_open_tab(self) -> None:
         toolbar = ttk.Frame(self.open_tab)
         toolbar.pack(fill="x", pady=(0, 10))
-        self.tr_button(toolbar, "Refresh", self.refresh_open_issues, prefix="↻ ").pack(side="left")
+        self.tr_button(toolbar, "Refresh", self.refresh_board_command, prefix="↻ ").pack(side="left")
         self.tr_button(toolbar, "Create Issue", self.show_create_issue_form, prefix="+ ", style="Accent.TButton").pack(side="right")
 
         content = ttk.Frame(self.open_tab)
@@ -696,7 +740,7 @@ class VisionIssueApp(tk.Tk):
 
         buttons = ttk.Frame(filters, style="Panel.TFrame")
         buttons.grid(row=2, column=4, columnspan=2, sticky="e", padx=6, pady=6)
-        self.tr_button(buttons, "Search", self.search_records, prefix="⌕ ", style="Accent.TButton").pack(side="left", padx=(0, 8))
+        self.tr_button(buttons, "Search", self.search_records_command, prefix="⌕ ", style="Accent.TButton").pack(side="left", padx=(0, 8))
         self.tr_button(buttons, "Excel", self.export_search_results, prefix="⇩ ").pack(side="left")
         self.tr_button(buttons, "Delete", lambda: self.delete_selected_issue(self.search_tree), prefix="✕ ").pack(side="left", padx=(8, 0))
 
@@ -832,7 +876,7 @@ class VisionIssueApp(tk.Tk):
         dashboard_header.pack(fill="x", pady=(0, 8))
         self.tr_label(dashboard_header, "Version Dashboard", style="Subheader.TLabel").pack(side="left")
         self.tr_button(dashboard_header, "Export Dashboard", self.export_version_dashboard, prefix="⇩ ").pack(side="right")
-        self.tr_button(dashboard_header, "Refresh", self.refresh_version_history, prefix="? ", width=10).pack(side="right", padx=(0, 6))
+        self.tr_button(dashboard_header, "Refresh", self.refresh_version_command, prefix="↻ ", width=10).pack(side="right", padx=(0, 6))
 
         legend = ttk.Frame(dashboard_header, style="Panel.TFrame")
         legend.pack(side="right", padx=(0, 14))
@@ -949,7 +993,7 @@ class VisionIssueApp(tk.Tk):
 
         actions = ttk.Frame(editor, style="Panel.TFrame")
         actions.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(10, 0))
-        self.tr_button(actions, "Refresh", self.refresh_version_history, prefix="↻ ").pack(side="left")
+        self.tr_button(actions, "Refresh", self.refresh_version_command, prefix="↻ ").pack(side="left")
         self.tr_button(actions, "Save Version Update", self.save_version_updates, prefix="✓ ", style="Accent.TButton").pack(side="right")
 
         description_container = ttk.Frame(content, style="Panel.TFrame")
@@ -1217,21 +1261,18 @@ class VisionIssueApp(tk.Tk):
 
     def save_selected_version_component_template(self, component: str) -> None:
         if component == "sw":
-            selected_version = self.version_description_sw_selected_version
             new_version = self.version_description_sw_var.get().strip()
             description = self.version_description_sw_text.get("1.0", "end").strip()
         else:
-            selected_version = self.version_description_algo_selected_version
             new_version = self.version_description_algo_var.get().strip()
             description = self.version_description_algo_text.get("1.0", "end").strip()
-        if not selected_version:
-            messagebox.showwarning(APP_TITLE, "Select a version first.")
+        if not new_version:
+            messagebox.showwarning(APP_TITLE, "Version is required.")
             return
         try:
-            update_version_component_template(
+            save_version_component_template(
                 self.version_description_group_var.get(),
                 component,
-                selected_version,
                 new_version,
                 description,
                 self.current_worker_var.get().strip(),
@@ -1240,7 +1281,8 @@ class VisionIssueApp(tk.Tk):
             messagebox.showerror(APP_TITLE, str(exc))
             return
         self.refresh_version_history()
-        messagebox.showinfo(APP_TITLE, "Version updated.")
+        self.select_version_description_component(component, new_version)
+        messagebox.showinfo(APP_TITLE, "Version saved.")
 
     def delete_selected_sw_version_template(self) -> None:
         self.delete_selected_version_component_template("sw")
@@ -1394,6 +1436,90 @@ class VisionIssueApp(tk.Tk):
     def refresh_version_history(self) -> None:
         self.populate_version_dashboard()
         self.populate_version_description_dashboard()
+
+    def sync_online_cache_async(
+        self,
+        force_full: bool = False,
+        refresh_open: bool = True,
+        refresh_search: bool = False,
+        refresh_version: bool = False,
+        reset_bounds: bool = False,
+        quiet: bool = False,
+    ) -> None:
+        if not online_mode():
+            self.set_sync_status("local")
+            if refresh_open:
+                self.refresh_open_issues()
+            if reset_bounds:
+                self.reset_search_date_bounds()
+            if refresh_search:
+                self.search_records()
+            if refresh_version:
+                self.refresh_version_history()
+            return
+        if self.online_sync_running:
+            return
+        self.online_sync_running = True
+        self.set_sync_status("syncing")
+
+        def worker() -> None:
+            error: Exception | None = None
+            try:
+                refresh_online_cache(force_full=force_full)
+            except Exception as exc:
+                error = exc
+            self.after(0, lambda: self.finish_online_sync(error, refresh_open, refresh_search, refresh_version, reset_bounds, quiet))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_online_sync(
+        self,
+        error: Exception | None,
+        refresh_open: bool,
+        refresh_search: bool,
+        refresh_version: bool,
+        reset_bounds: bool,
+        quiet: bool,
+    ) -> None:
+        self.online_sync_running = False
+        if error is not None:
+            self.set_sync_status("offline")
+            if not quiet:
+                messagebox.showwarning(APP_TITLE, f"Online sync failed:\n{error}")
+            return
+        self.set_sync_status("synced", datetime.now().strftime("%H:%M"))
+        if reset_bounds:
+            self.reset_search_date_bounds()
+        preserve_view = quiet
+        if refresh_open:
+            self.refresh_open_issues(preserve_view=preserve_view)
+        if refresh_search:
+            self.search_records(preserve_view=preserve_view)
+        if refresh_version:
+            self.refresh_version_history()
+
+    def periodic_online_sync(self) -> None:
+        if online_mode():
+            self.sync_online_cache_async(refresh_open=True, refresh_search=True, refresh_version=False, quiet=True)
+            self.after(30000, self.periodic_online_sync)
+
+    def refresh_board_command(self) -> None:
+        if online_mode():
+            self.sync_online_cache_async(refresh_open=True, refresh_search=True, refresh_version=False, quiet=False)
+        else:
+            self.refresh_open_issues()
+
+    def refresh_version_command(self) -> None:
+        if online_mode():
+            self.sync_online_cache_async(refresh_open=False, refresh_search=False, refresh_version=True, quiet=False)
+        else:
+            self.refresh_version_history()
+
+    def search_records_command(self) -> None:
+        if online_mode():
+            self.sync_online_cache_async(refresh_open=False, refresh_search=True, refresh_version=False, quiet=False)
+        else:
+            self.search_records()
 
     def export_version_dashboard(self) -> None:
         default_name = f"vision_version_dashboard_{now_text().replace(':', '').replace(' ', '_')}.xlsx"
@@ -1657,7 +1783,8 @@ class VisionIssueApp(tk.Tk):
     def save_issue(self) -> None:
         try:
             issue = self.form_issue()
-            if self.selected_issue_id is None:
+            is_new_issue = self.selected_issue_id is None
+            if is_new_issue:
                 saved_ids = create_issues_for_lines(issue, self.selected_lines)
                 saved_id = saved_ids[-1]
                 if len(saved_ids) == 1:
@@ -1669,6 +1796,8 @@ class VisionIssueApp(tk.Tk):
                 saved_id = self.selected_issue_id
                 messagebox.showinfo(APP_TITLE, "Issue updated.")
             self.refresh_open_issues()
+            if is_new_issue:
+                self.reset_search_date_bounds()
             self.search_records()
             self.show_issue_detail(saved_id)
             self.select_issue_in_tree(self.search_tree, saved_id)
@@ -1696,11 +1825,27 @@ class VisionIssueApp(tk.Tk):
             if widget is not None and widget.winfo_exists():
                 widget.delete("1.0", "end")
 
-    def refresh_open_issues(self) -> None:
-        self.active_issue_rows = active_issues()
-        self.render_issue_board()
+    def board_scroll_state(self) -> dict[str, float]:
+        if not hasattr(self, "board_column_canvases"):
+            return {}
+        return {
+            status: canvas.yview()[0]
+            for status, canvas in self.board_column_canvases.items()
+            if canvas.winfo_exists()
+        }
 
-    def render_issue_board(self) -> None:
+    def restore_board_scroll_state(self, scroll_state: dict[str, float]) -> None:
+        for status, position in scroll_state.items():
+            canvas = self.board_column_canvases.get(status)
+            if canvas is not None and canvas.winfo_exists():
+                canvas.yview_moveto(position)
+
+    def refresh_open_issues(self, preserve_view: bool = False) -> None:
+        scroll_state = self.board_scroll_state() if preserve_view else {}
+        self.active_issue_rows = active_issues()
+        self.render_issue_board(preserve_view=preserve_view, scroll_state=scroll_state)
+
+    def render_issue_board(self, preserve_view: bool = False, scroll_state: dict[str, float] | None = None) -> None:
         rows_by_status = {status: [] for status in ACTIVE_STATUS_OPTIONS}
         for row in self.active_issue_rows:
             if row["status"] in rows_by_status:
@@ -1716,8 +1861,11 @@ class VisionIssueApp(tk.Tk):
             for row in rows_by_status[status]:
                 self.add_issue_card(frame, row, self.board_column_canvases[status])
             self.bind_mousewheel_recursive(frame, self.board_column_canvases[status])
-            self.board_column_canvases[status].yview_moveto(0)
+            if not preserve_view:
+                self.board_column_canvases[status].yview_moveto(0)
         self.refresh_board_card_styles()
+        if preserve_view and scroll_state:
+            self.after_idle(lambda state=scroll_state: self.restore_board_scroll_state(state))
 
     def add_issue_card(self, parent: ttk.Frame, row, canvas: tk.Canvas) -> None:
         issue_id = int(row["id"])
@@ -1805,7 +1953,23 @@ class VisionIssueApp(tk.Tk):
         self.search_records()
         self.show_empty_issue_detail()
 
-    def search_records(self) -> None:
+    def restore_tree_view_state(self, tree: ttk.Treeview, selected_item: str | None, y_position: float | None) -> None:
+        children = set(tree.get_children())
+        if selected_item and selected_item in children:
+            tree.selection_set(selected_item)
+            tree.focus(selected_item)
+        else:
+            tree.selection_remove(tree.selection())
+        if y_position is not None:
+            tree.yview_moveto(y_position)
+
+    def search_records(self, preserve_view: bool = False) -> None:
+        selected_item = None
+        y_position = None
+        if preserve_view and hasattr(self, "search_tree"):
+            selection = self.search_tree.selection()
+            selected_item = selection[0] if selection else None
+            y_position = self.search_tree.yview()[0]
         filters = {
             "status": self.filter_status.get(),
             "line": self.filter_line.get(),
@@ -1818,7 +1982,9 @@ class VisionIssueApp(tk.Tk):
         }
         self.search_rows = search_issues(filters)
         self.populate_tree(self.search_tree, self.search_rows)
-        if self.search_tree.get_children():
+        if preserve_view:
+            self.after_idle(lambda: self.restore_tree_view_state(self.search_tree, selected_item, y_position))
+        elif self.search_tree.get_children():
             self.search_tree.yview_moveto(1.0)
 
     def reset_search_date_bounds(self) -> None:
@@ -1846,7 +2012,7 @@ class VisionIssueApp(tk.Tk):
         elif filter_name == "recipe":
             self.filter_category.set("Recipe")
             self.update_filter_subcategories()
-        self.search_records()
+        self.search_records_command()
 
     def clear_search_filters(self) -> None:
         for variable in [
@@ -1862,7 +2028,7 @@ class VisionIssueApp(tk.Tk):
         self.refresh_filter_instrument_buttons()
         self.reset_search_date_bounds()
         self.update_filter_subcategories()
-        self.search_records()
+        self.search_records_command()
 
     def populate_tree(self, tree: ttk.Treeview, rows: list) -> None:
         for item in tree.get_children():

@@ -16,3 +16,10 @@ venv/
 .env
 
 *.log
+
+# Online deployment secrets and generated releases
+config.json
+Code_WITH_LOCAL_TOKEN.gs
+*WITH_LOCAL_TOKEN*.gs
+*.exe
+*.zip

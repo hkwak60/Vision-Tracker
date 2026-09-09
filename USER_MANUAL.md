@@ -82,7 +82,8 @@ Welding(-)
 
 ### 작업자
 
-우측 상단 작업자 선택에서 이슈 작성자를 선택합니다.
+이슈 작성자는 `Issue Board`의 `Create Issue` / `Edit Issue` 패널 안에 있는 `Logged By`에서 선택합니다.
+버전 업데이트 작성자는 `Version Update` 영역의 `Logged By`에서 선택합니다.
 
 ```text
 Hojun Kwak
@@ -92,7 +93,7 @@ Jisub Yun
 ```
 
 예시:
-- Jihoon Yun이 이슈를 작성하는 경우 우측 상단에서 `Jihoon Yun`을 선택한 뒤 저장합니다.
+- Jihoon Yun이 이슈를 작성하는 경우 `Create Issue` 패널에서 `Logged By`를 `Jihoon Yun`으로 선택한 뒤 저장합니다.
 
 ### 언어
 
@@ -105,31 +106,42 @@ English
 
 프로그램 시작 기본 언어는 한국어입니다.
 
-## 4. 미해결 이슈 탭
+## 4. Issue Board
 
-미해결 이슈 탭은 현재 조치가 필요하거나 모니터링 중인 이슈를 보여줍니다.
+`Issue Board`는 프로그램 시작 시 처음 보이는 화면입니다.
+현재 조치가 필요하거나 모니터링 중인 이슈를 카드 형태로 보여줍니다.
 
-표시되는 상태:
+보드 컬럼:
 - Action Required: 조치 필요
 - Monitoring: 모니터링
 
-Resolved 상태는 미해결 이슈 탭에서 제외되고 검색 탭에서 확인할 수 있습니다.
+Resolved 상태는 Issue Board에서 제외되고 `Search / Report` 탭에서 확인할 수 있습니다.
 
-### 대시보드 카드
+### 이슈 카드
 
-상단 카드:
-- Action Required
-- Monitoring
-- Resolved Today
-- Active
+각 카드는 운영에 필요한 핵심 정보만 표시합니다.
 
-예시:
-- Action Required가 3이면 현재 즉시 조치가 필요한 이슈가 3건입니다.
-- Active는 Action Required와 Monitoring을 합친 수량입니다.
+표시 항목:
+- Title
+- Line / Vision
+- Category
+- Issue Time
+- Downtime Duration
 
-### 이슈 상세 보기
+예시 카드:
 
-테이블에서 이슈를 선택하면 오른쪽 상세 패널에 내용이 표시됩니다.
+```text
+Pinhole camera disconnect
+1-1 / Pinhole
+Hardware / Camera
+2026-06-18 08:35
+Downtime Duration: 00:15
+```
+
+### 상세 패널
+
+카드를 클릭하면 오른쪽 상세 패널에 전체 내용이 표시됩니다.
+상세 패널은 마우스를 패널 위에 올린 상태에서 휠로 스크롤할 수 있습니다.
 
 표시 항목:
 - Title
@@ -137,36 +149,61 @@ Resolved 상태는 미해결 이슈 탭에서 제외되고 검색 탭에서 확�
 - Line / Instrument
 - Category
 - Issue Time
-- Logged By
 - Downtime Duration
+- Logged By
 - Description
+- Resolution Notes
 
-상세 패널은 세로 스크롤이 가능합니다.
-
-### 버튼 기능
-
-Refresh:
-- 최신 이슈 목록을 다시 불러옵니다.
+### 상세 패널 버튼
 
 Edit:
-- 선택한 이슈를 `이슈 등록 / 수정` 탭으로 불러옵니다.
+- 선택한 이슈를 오른쪽 패널의 `Edit Issue` 폼으로 전환합니다.
+
+Move to Monitoring:
+- Action Required 이슈를 Monitoring으로 이동합니다.
+
+Move to Action Required:
+- Monitoring 이슈를 Action Required로 되돌립니다.
 
 Resolved:
 - 선택한 이슈를 해결 완료 처리합니다.
 - Downtime Duration이 비어 있으면 발생 시간 기준으로 자동 계산됩니다.
+- 처리 후 해당 카드는 Issue Board에서 사라집니다.
 
 Delete:
 - 선택한 이슈를 삭제합니다.
 - 삭제 전 확인창이 표시됩니다.
 
 예시:
-1. `1-1 Pinhole` 이슈를 선택합니다.
-2. 해결이 끝났으면 `Resolved` 버튼을 누릅니다.
-3. 해당 이슈는 미해결 이슈 탭에서 사라지고 검색 탭에서 `Resolved` 상태로 확인됩니다.
+1. `1-1 Pinhole` 카드를 클릭합니다.
+2. 조치 후 관찰이 필요하면 `Move to Monitoring`을 누릅니다.
+3. 해결이 끝났으면 `Resolved`를 누릅니다.
+4. 해당 이슈는 Issue Board에서 사라지고 `Search / Report`에서 `Resolved` 상태로 확인됩니다.
 
-## 5. 이슈 등록 / 수정 탭
+## 5. 이슈 등록 / 수정
 
-새 이슈를 입력하거나 기존 이슈를 수정하는 탭입니다.
+새 이슈 입력과 기존 이슈 수정은 모두 `Issue Board` 오른쪽 패널에서 처리합니다.
+
+### 신규 이슈 등록
+
+`Issue Board` 우측 상단의 `Create Issue` 버튼을 누르면 항상 빈 신규 폼이 표시됩니다.
+이전에 선택했던 카드 정보는 신규 폼에 남지 않습니다.
+
+신규 저장 버튼:
+- Create Issue
+
+보조 버튼:
+- Cancel
+
+### 기존 이슈 수정
+
+기존 카드를 클릭한 뒤 상세 패널에서 `Edit`을 누르면 `Edit Issue` 폼이 표시됩니다.
+
+수정 저장 버튼:
+- Save Changes
+
+보조 버튼:
+- Cancel
 
 ### 라인 선택
 
@@ -331,9 +368,10 @@ Camera cable 재체결 후 vision program restart.
 - 제목: Pinhole camera disconnect
 - 설명: Camera connection lost during production.
 
-입력 후 `Save`를 누르면 미해결 이슈 탭에 표시됩니다.
+입력 후 `Create Issue`를 누르면 Issue Board에 카드가 표시됩니다.
+기존 이슈를 수정한 경우 `Save Changes`를 누르면 카드와 상세 패널이 갱신됩니다.
 
-## 6. 검색 및 엑셀 보고서 탭
+## 6. Search / Report 탭
 
 이슈를 조건별로 검색하고 Excel 파일로 저장하는 탭입니다.
 
@@ -350,6 +388,7 @@ Camera cable 재체결 후 vision program restart.
 - Vision Filter
 
 날짜 범위는 기본적으로 DB에 있는 첫 이슈 시간과 가장 최근 이슈 시간으로 설정됩니다.
+검색 결과 테이블은 가로 스크롤을 지원하므로 제목이나 비전명이 길어도 좌우로 이동해 확인할 수 있습니다.
 
 ### Vision Filter
 
@@ -384,6 +423,10 @@ Excel 보고서 특징:
 - 검색 결과만 저장됩니다.
 - ID는 실제 DB ID가 아니라 검색 결과의 순번으로 표시됩니다.
 - Issue Time 기준으로 정렬됩니다.
+- Excel 컬럼 순서: `ID`, `Line`, `Instrument`, `Issue Time`, `Downtime`, `Category`, `Title`, `Status`, `Description`, `Resolution Notes`
+- `Downtime` 컬럼은 기본적으로 숨김 처리됩니다.
+- `Title`, `Description`, `Resolution Notes`를 제외한 표시 컬럼은 입력 길이에 맞춰 여백이 최소화됩니다.
+- `Description`은 기존 고정 폭을 유지하고, `Resolution Notes`는 약 800px 폭으로 고정되며 셀 안에서 자동 줄바꿈됩니다.
 
 예시:
 - 전체 100건 중 Camera Grab Fail 2건만 검색 후 Excel 저장하면 ID는 `1`, `2`로 저장됩니다.
@@ -393,6 +436,11 @@ Excel 보고서 특징:
 검색 결과 테이블에서 이슈를 선택하고 `Delete`를 누르면 삭제할 수 있습니다.
 
 삭제 전 확인창이 표시됩니다.
+
+### 상세 확인
+
+검색 결과를 더블클릭하면 `Issue Board` 탭의 오른쪽 상세 패널에서 해당 이슈를 확인할 수 있습니다.
+Resolved 이슈도 상세 확인과 수정이 가능합니다.
 
 ## 7. 버전 기록 탭
 
@@ -413,24 +461,37 @@ Excel 보고서 특징:
 
 총 28개 조합의 현재 버전을 확인할 수 있습니다.
 
-카드 표시 내용:
-- Line
+셀 표시 내용:
 - SW Version
 - Algo Version
-- Last Updated
 
-최근 7일 내 업데이트된 항목은 색상으로 강조됩니다.
+라인명은 왼쪽 행 헤더에, 비전명은 상단 열 헤더에 표시됩니다.
+셀 안에는 현재 적용된 SW/Algo만 compact하게 표시됩니다.
+
+최근 7일 내 업데이트된 항목은 셀 왼쪽의 초록색 바로 표시됩니다.
+같은 비전의 다른 라인 대비 버전이 낮은 경우 오른쪽에 작은 색상 점이 표시됩니다.
+
+표시 의미:
+- 주황색 점: SW Version이 해당 비전의 최신 SW보다 낮음
+- 파란색 점: Algo Version이 해당 비전의 최신 Algo보다 낮음
+- 초록색 바: 최근 7일 내 업데이트됨
 
 예시:
 
 ```text
-1-1
-SW 1.2.3
-Algo 4.5.6
-2026-06-18 09:10
+SW 260522.1450
+A  1.2.3.4
 ```
 
-버전 정보가 없으면 `No Version`으로 표시됩니다.
+버전 정보가 없으면 `-`로 표시됩니다.
+
+Sealing은 별도 Algo Version이 없으므로 SW Version만 표시됩니다.
+
+예시:
+
+```text
+SW 260522.1450
+```
 
 ### 대시보드 Excel 추출
 
@@ -443,8 +504,6 @@ Excel 항목:
 - SW Version
 - Algo Version
 - Last Updated
-- Logged By
-- Description
 
 예시 사용:
 - 현재 전체 라인/비전 버전 현황을 회의 자료로 저장
@@ -476,41 +535,32 @@ Sealing
 - 실제 적용 버전은 각 라인/비전별로 다를 수 있습니다.
 
 예시:
-- Common 그룹에 SW 1.5.0이 있어도 `Pinhole`만 먼저 업데이트하고 `Pouch Align`은 이전 버전을 유지할 수 있습니다.
+- Common 그룹에 SW 260522.1450이 있어도 `Pinhole`만 먼저 업데이트하고 `Pouch Align`은 이전 버전을 유지할 수 있습니다.
 
 ## 10. Version Update
 
 새 버전 적용 기록을 입력하는 영역입니다.
 
 입력 항목:
-- Version Group
-- Version Template
-- Update Time
 - SW Version
 - Algo Version
+- Update Time
+- Logged By
 - 모니터링 이슈 등록
 - Line
 - Vision
-- Description
+- SW Description
+- Algo Description
 
-### Version Template
-
-선택한 그룹의 최근 버전 템플릿 최대 3개가 표시됩니다.
-
-용도:
-- 최신 버전 재사용
-- 이전 버전 선택 후 롤백 기록
+Version Update 패널은 라인/비전 선택 버튼이 가장 위에 있습니다.
+비전을 선택하면 해당 비전이 속한 그룹 기준으로 같은 그룹의 비전들을 함께 선택할 수 있습니다.
 
 예시:
-- Welding 그룹에서 최근 템플릿:
+- `Welding(+)`를 선택하면 `Welding(-)`도 함께 선택 가능
+- `Pinhole`을 선택하면 `Pouch Align`, `Lead Align`도 함께 선택 가능
+- `Lead`와 `Sealing`은 각각 단독 그룹으로 관리
 
-```text
-SW 1.3.0 / Algo 2.8.1
-SW 1.2.5 / Algo 2.7.9
-SW 1.2.0 / Algo 2.7.0
-```
-
-롤백 시 이전 템플릿을 선택한 뒤 적용할 라인/비전을 선택하고 저장합니다.
+Sealing은 별도 Algo Version이 없으므로 Algo 입력칸과 Algo 설명은 사용하지 않습니다.
 
 ### Update Time
 
@@ -555,8 +605,8 @@ YYYY-MM-DD HH:MM
 ```text
 Line: 1-1
 Vision: Pinhole
-SW Version: 1.5.0
-Algo Version: 3.2.1
+SW Version: 260522.1450
+Algo Version: 1.2.3.4
 Update Time: 2026-06-18 10:20
 ```
 
@@ -565,7 +615,7 @@ Update Time: 2026-06-18 10:20
 ```text
 Software > Program Update
 Monitoring
-Program Update - 1-1 Pinhole SW 1.5.0 / Algo 3.2.1
+Program Update - 1-1 Pinhole SW 260522.1450 / Algo 1.2.3.4
 ```
 
 ## 11. Version Description
@@ -583,19 +633,25 @@ New Lead
 Sealing
 ```
 
-선택한 그룹의 최근 버전 템플릿 최대 3개가 리스트로 표시됩니다.
+선택한 그룹의 SW Version 리스트와 Algo Version 리스트가 좌우로 분리되어 표시됩니다.
+Sealing은 Algo Version을 사용하지 않으므로 SW 리스트만 넓게 표시됩니다.
 
 ### 버전 내용 수정
 
 수정 가능 항목:
 - SW Version
+- SW Description
 - Algo Version
-- Description
+- Algo Description
 
-수정 후 `Save Version`을 누르면 저장됩니다.
+SW와 Algo는 각각 선택, 수정, 저장할 수 있습니다.
+예를 들어 SW 설명만 바꾸려면 왼쪽 SW 리스트에서 버전을 선택하고 `Save SW`를 누릅니다.
+Algo 설명만 바꾸려면 오른쪽 Algo 리스트에서 버전을 선택하고 `Save Algo`를 누릅니다.
+
+Sealing 그룹은 Algo Version을 사용하지 않으므로 SW Version과 SW Description만 수정합니다.
 
 수정 영향:
-- 해당 그룹/SW/Algo로 기록된 version history도 함께 업데이트됩니다.
+- 해당 그룹의 선택한 SW 또는 Algo로 기록된 version history도 함께 업데이트됩니다.
 - Version Dashboard에도 변경 내용이 반영됩니다.
 
 예시:
@@ -603,34 +659,33 @@ Sealing
 수정 전:
 
 ```text
-SW Version: 1.5.0
-Algo Version: 3.2.1
-Description: ROI threshold update
+SW Version: 260522.1450
+SW Description: ROI threshold update
 ```
 
 수정 후:
 
 ```text
-SW Version: 1.5.1
-Algo Version: 3.2.2
-Description: ROI threshold update and PLC handshake delay fix
+SW Version: 260522.1530
+SW Description: ROI threshold update and PLC handshake delay fix
 ```
 
 ### 버전 삭제
 
-삭제할 버전을 선택하고 `Delete Version`을 누릅니다.
+삭제할 SW 또는 Algo 버전을 선택하고 `Delete SW` 또는 `Delete Algo`를 누릅니다.
 
 삭제 영향:
-- 해당 버전 템플릿이 삭제됩니다.
-- 해당 그룹/SW/Algo로 적용됐던 version history 기록도 삭제됩니다.
+- 해당 SW 또는 Algo 버전 템플릿이 삭제됩니다.
+- 해당 그룹에서 선택한 SW 또는 Algo로 적용됐던 version history 기록도 삭제됩니다.
 - Version Dashboard는 남아있는 이전 기록 기준으로 자동 갱신됩니다.
 
 예시:
-- `Welding / SW 1.3.0 / Algo 2.8.1`을 삭제하면 해당 버전으로 표시되던 라인/비전은 이전 버전으로 돌아가거나, 이전 기록이 없으면 `No Version`으로 표시됩니다.
+- `Welding / SW 260522.1450`을 삭제하면 해당 SW로 표시되던 라인/비전은 이전 기록 기준으로 돌아가거나, 이전 기록이 없으면 `-`로 표시됩니다.
+- `Welding / Algo 1.2.3.4`를 삭제하면 해당 Algo로 표시되던 라인/비전도 동일하게 갱신됩니다.
 
 주의:
 - 버전 삭제 시 자동 생성됐던 이슈 로그는 삭제되지 않습니다.
-- 이슈 로그 삭제가 필요하면 미해결 이슈 탭 또는 검색 탭에서 별도로 삭제합니다.
+- 이슈 로그 삭제가 필요하면 Issue Board 또는 Search / Report 탭에서 별도로 삭제합니다.
 
 ## 12. 권장 입력 규칙
 
@@ -684,8 +739,8 @@ Camera exposure value restored from 1200 to 950.
 
 ### 예시 A: 카메라 하드웨어 이슈 등록
 
-1. 우측 상단 작업자 선택: `Jihoon Yun`
-2. `이슈 등록 / 수정` 탭 선택
+1. `Issue Board` 탭에서 `Create Issue` 클릭
+2. Logged By: `Jihoon Yun`
 3. 라인: `1-1`
 4. 비전: `Pinhole`
 5. Issue Time: `2026-06-18 08:35`
@@ -695,28 +750,34 @@ Camera exposure value restored from 1200 to 950.
 9. Downtime Duration: `00:15`
 10. Title: `Pinhole camera disconnect`
 11. Description 입력
-12. `Save`
+12. `Create Issue`
 
 결과:
-- 미해결 이슈 탭에 Action Required 이슈로 표시됩니다.
+- Issue Board의 Action Required 컬럼에 카드로 표시됩니다.
 
 ### 예시 B: 프로그램 업데이트 기록
 
 1. `버전 기록` 탭 선택
-2. Version Group: `Common`
-3. Update Time: `2026-06-18 10:20`
-4. SW Version: `1.5.0`
-5. Algo Version: `3.2.1`
-6. `☑ 모니터링 이슈 등록` 켜기
-7. Line: `1-1`, `1-2`
-8. Vision: `Pinhole`, `Pouch Align`
-9. Description:
+2. Line: `1-1`, `1-2`
+3. Vision: `Pinhole`, `Pouch Align`
+4. SW Version: `260522.1450`
+5. Algo Version: `1.2.3.4`
+6. Update Time: `2026-06-18 10:20`
+7. Logged By: `Jihoon Yun`
+8. `☑ 모니터링 이슈 등록` 켜기
+9. SW Description:
 
 ```text
 False reject 개선을 위해 ROI threshold 및 Add Measure logic update.
 ```
 
-10. `Save Version Update`
+10. Algo Description:
+
+```text
+Inspection threshold version 1.2.3.4 적용.
+```
+
+11. `Save Version Update`
 
 결과:
 - 선택한 라인/비전에 버전 기록 생성
@@ -726,18 +787,17 @@ False reject 개선을 위해 ROI threshold 및 Add Measure logic update.
 ### 예시 C: 이전 버전으로 롤백 기록
 
 1. `버전 기록` 탭 선택
-2. Version Group: `Welding`
-3. Version Template에서 이전 버전 선택
-4. Line: `2-1`
-5. Vision: `Welding(+)`, `Welding(-)`
-6. Update Time 입력
-7. Description:
+2. Line: `2-1`
+3. Vision: `Welding(+)`, `Welding(-)`
+4. 이전 SW Version / Algo Version을 직접 입력
+5. Update Time 입력
+6. SW Description:
 
 ```text
 New version에서 intermittent grab delay 발생하여 이전 안정 버전으로 rollback.
 ```
 
-8. `Save Version Update`
+7. `Save Version Update`
 
 결과:
 - Version Dashboard가 이전 버전으로 표시됩니다.
@@ -745,7 +805,7 @@ New version에서 intermittent grab delay 발생하여 이전 안정 버전으�
 
 ### 예시 D: 검색 후 Excel 보고서 저장
 
-1. `검색 및 엑셀 보고서` 탭 선택
+1. `Search / Report` 탭 선택
 2. Category: `Software`
 3. Subcategory: `Program Update`
 4. From / To 날짜 확인
@@ -814,4 +874,3 @@ vision_issues_2026-06-18.db
 - 버전 삭제는 Version Dashboard 표시에도 영향을 줍니다.
 - 여러 사용자가 동시에 저장하는 환경에서는 충돌 가능성이 있습니다.
 - 중요한 변경 전에는 DB 파일을 백업하는 것이 좋습니다.
-

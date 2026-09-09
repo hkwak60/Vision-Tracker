@@ -1,0 +1,7 @@
+{
+  "mode": "online",
+  "apps_script_url": "PASTE_DEPLOYED_APPS_SCRIPT_WEB_APP_URL_HERE",
+  "api_token": "PASTE_SHARED_TOKEN_HERE",
+  "spreadsheet_id": "PASTE_GOOGLE_SHEET_ID_HERE",
+  "request_timeout_seconds": 20
+}

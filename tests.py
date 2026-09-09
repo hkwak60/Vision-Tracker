@@ -23,6 +23,7 @@ from vision_tracker import (
     latest_version_by_instrument,
     recent_version_templates,
     resolve_issue,
+    save_version_component_template,
     search_issues,
     set_issue_status,
     update_issue,
@@ -183,6 +184,49 @@ def run_tests() -> None:
         assert first_time == "2026-06-17 07:30"
         assert latest_time == "2026-06-17 09:00"
 
+        downtime_id = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 09:15",
+                resolved_time="00:00",
+                line="1-1",
+                instrument="Lead",
+                worker="Hojun Kwak",
+                category="Software",
+                subcategory="UI",
+                title="Resolved button should preserve manually entered downtime",
+                description="Downtime duration must stay user-controlled.",
+                status="Monitoring",
+                resolution_notes="Keep this note.",
+            ),
+            db_path,
+        )
+        resolve_issue(downtime_id, db_path=db_path)
+        downtime_rows = search_issues({"keyword": "Resolved button should preserve"}, db_path)
+        assert len(downtime_rows) == 1
+        assert downtime_rows[0]["status"] == "Resolved"
+        assert downtime_rows[0]["resolved_time"] == "00:00"
+        assert downtime_rows[0]["resolution_notes"] == "Keep this note."
+
+        manual_downtime_id = create_issue(
+            IssueInput(
+                issue_time="2026-06-17 09:20",
+                resolved_time="01:23",
+                line="1-2",
+                instrument="Lead",
+                worker="Hojun Kwak",
+                category="Software",
+                subcategory="UI",
+                title="Status change should preserve downtime",
+                description="Changing to Resolved must not calculate duration.",
+                status="Monitoring",
+            ),
+            db_path,
+        )
+        set_issue_status(manual_downtime_id, "Resolved", db_path)
+        manual_rows = search_issues({"keyword": "Status change should preserve downtime"}, db_path)
+        assert len(manual_rows) == 1
+        assert manual_rows[0]["resolved_time"] == "01:23"
+
         mavin_ids = create_issues_for_lines(
             IssueInput(
                 issue_time="2026-06-17 09:30",
@@ -315,6 +359,51 @@ def run_tests() -> None:
         update_issues = search_issues({"category": "Software", "subcategory": "Program Update"}, db_path)
         assert len(update_issues) == 3
         assert all(row["status"] == "Monitoring" for row in update_issues)
+        save_version_component_template(
+            "Welding",
+            "sw",
+            "SW-1.2.0",
+            "Unapplied SW version notes.",
+            "Jihoon Yun",
+            db_path,
+        )
+        unapplied_sw_components = version_component_templates("Welding", "sw", db_path=db_path)
+        unapplied_sw = [row for row in unapplied_sw_components if row["version"] == "SW-1.2.0"][0]
+        assert unapplied_sw["description"] == "Unapplied SW version notes."
+        sw_order = [row["version"] for row in unapplied_sw_components]
+        assert sw_order.index("SW-1.2.0") < sw_order.index("SW-1.1.0")
+        save_version_component_template(
+            "Welding",
+            "sw",
+            "SW-1.0.5",
+            "Lower version added later.",
+            "Jihoon Yun",
+            db_path,
+        )
+        late_lower_sw_components = version_component_templates("Welding", "sw", db_path=db_path)
+        late_lower_order = [row["version"] for row in late_lower_sw_components]
+        assert late_lower_order.index("SW-1.2.0") < late_lower_order.index("SW-1.1.0")
+        assert late_lower_order.index("SW-1.1.0") < late_lower_order.index("SW-1.0.5")
+        create_version_update(
+            VersionInput(
+                update_time="2026-06-18 09:30",
+                group_name="Welding",
+                line="1-2",
+                instrument="Welding(+)",
+                sw_version="SW-1.2.0",
+                algo_version="ALG-2.1.0",
+                description="",
+                worker="Jihoon Yun",
+            ),
+            False,
+            db_path,
+        )
+        unapplied_history = [
+            row
+            for row in version_history_rows(db_path)
+            if row["line"] == "1-2" and row["instrument"] == "Welding(+)" and row["sw_version"] == "SW-1.2.0"
+        ][0]
+        assert unapplied_history["sw_description"] == "Unapplied SW version notes."
 
         create_version_update(
             VersionInput(

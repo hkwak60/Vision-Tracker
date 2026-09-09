@@ -1,60 +1,54 @@
 # Vision Issue Tracker
 
-Local Windows desktop issue tracker for mass-production vision inspection instruments.
+Windows desktop issue tracker for mass-production vision inspection instruments.
 
-## User Manual
+The current source supports both:
 
-See [USER_MANUAL.md](USER_MANUAL.md) for the full Korean user manual with feature descriptions, examples, deployment notes, and DB backup guidance.
+- local SQLite mode for one shared PC
+- online Google Sheets + Apps Script mode with a local cache for multiple PCs
 
-## Current Prototype
+## Safety
 
-- Local SQLite database stored in `data/vision_issues.db`
-- Shared-PC workflow with worker selection, no login
-- Lines: `1-1`, `1-2`, `2-1`, `2-2`
-- Instruments per line: `Pinhole`, `Pouch Align`, `Lead`, `Sealing`, `Lead Align`, `Welding(+)`, `Welding(-)`
-- Categories and subcategories:
-  - Hardware: Camera, Lighting
-  - Software: Program Crash, UI, PLC, Other
-  - Recipe: Overkill, Underkill, Add Measure, Bypass/Unbypass
-  - Camera Grab Fail
-  - Production
-  - Other
-- Active statuses shown in Open Issues:
-  - Action Required
-  - Monitoring
-- Current worker profile selector:
-  - Hojun Kwak
-  - Kijung Kim
-  - Jihoon Yun
-  - Jisub Yun
-- New issue entry
-- Open issue lookup
-- Search and Excel export
-- Dashboard summary cards for active issue counts
-- Visual line/instrument selector with dedicated line buttons and vision-type buttons
-- Selected line and vision buttons remain highlighted
-- Issue entry and search filters support multiple selected vision instruments
-- Selected-issue detail panel with quick status actions
-- Scrollable selected-issue detail panel and issue tables
-- Search quick filters for common report views
-- Search and Excel rows are sorted by issue time with sequential report numbers
-- Header language selector for English and Korean UI labels
-- Search date range defaults to the first and latest issue times
+Do not commit real deployment secrets. Keep these local only:
 
-## Run
+- `config.json`
+- real Google Sheet IDs
+- deployed Apps Script `/exec` URLs
+- API tokens
+- generated `.exe` / `.zip` release files
+- local `data/` databases
 
-Use the bundled Python runtime from Codex, or any local Python 3 installation with `openpyxl` available:
+Use `config.example.json` and `apps_script/Code.gs` as sanitized templates.
+
+## Main Features
+
+- Issue Board with Action Required and Monitoring columns
+- Create/Edit issue workflow with multi-line and multi-vision selection
+- Search / Report with Excel export
+- Version History dashboard and SW/Algo version descriptions
+- Korean/English UI selector
+- Online sync status with local cache fallback
+
+## Online Setup
+
+See `docs/ONLINE_SETUP.md` for the Google Sheets / Apps Script setup flow.
+
+## Run From Source
 
 ```powershell
-& "C:\Users\hkwak\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" app.py
+python app.py
 ```
 
-## Build To EXE Later
-
-The planned packaging tool is PyInstaller:
+Install dependencies first if needed:
 
 ```powershell
-pyinstaller --onefile --windowed --name VisionIssueTracker app.py
+pip install -r requirements.txt
 ```
 
-That step requires PyInstaller to be installed in the Python environment used for packaging.
+## Build EXE
+
+```powershell
+python -m PyInstaller --noconfirm VisionIssueTracker.spec
+```
+
+When publishing a new exe, commit and push the source changes, but keep generated release files and real deployment credentials out of GitHub.

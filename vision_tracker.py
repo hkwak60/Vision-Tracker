@@ -110,6 +110,15 @@ def version_sort_key(value: str, component: str | None = None) -> tuple[int, ...
     return tuple(int(part) for part in digits)
 
 
+def version_component_list_sort_key(item: dict[str, str], component: str) -> tuple[int, tuple[int, ...], str, int]:
+    key = version_sort_key(item.get("version", ""), component)
+    try:
+        row_id = int(item.get("id", "0") or 0)
+    except ValueError:
+        row_id = 0
+    return (1 if key is not None else 0, key or tuple(), item.get("updated_at", ""), row_id)
+
+
 def split_instruments(value: str) -> list[str]:
     instruments = [item.strip() for item in value.split("/") if item.strip()]
     return instruments
@@ -422,17 +431,14 @@ def update_issue(issue_id: int, issue: IssueInput, db_path: Path = DB_PATH) -> N
 
 def resolve_issue(issue_id: int, notes: str = "", db_path: Path = DB_PATH) -> None:
     with closing(connect(db_path)) as conn:
-        row = conn.execute("SELECT issue_time FROM issues WHERE id = ?", (issue_id,)).fetchone()
-        duration = downtime_duration(row["issue_time"]) if row else ""
         conn.execute(
             """
             UPDATE issues
             SET status = 'Resolved',
-                resolved_time = COALESCE(NULLIF(resolved_time, ''), ?),
-                resolution_notes = ?
+                resolution_notes = CASE WHEN ? = '' THEN resolution_notes ELSE ? END
             WHERE id = ?
             """,
-            (duration, notes, issue_id),
+            (notes, notes, issue_id),
         )
         conn.commit()
 
@@ -441,20 +447,7 @@ def set_issue_status(issue_id: int, status: str, db_path: Path = DB_PATH) -> Non
     if status not in STATUS_OPTIONS:
         raise ValueError("Status is not valid.")
     with closing(connect(db_path)) as conn:
-        if status == "Resolved":
-            row = conn.execute("SELECT issue_time FROM issues WHERE id = ?", (issue_id,)).fetchone()
-            duration = downtime_duration(row["issue_time"]) if row else ""
-            conn.execute(
-                """
-                UPDATE issues
-                SET status = ?,
-                    resolved_time = COALESCE(NULLIF(resolved_time, ''), ?)
-                WHERE id = ?
-                """,
-                (status, duration, issue_id),
-            )
-        else:
-            conn.execute("UPDATE issues SET status = ? WHERE id = ?", (status, issue_id))
+        conn.execute("UPDATE issues SET status = ? WHERE id = ?", (status, issue_id))
         conn.commit()
 
 
@@ -847,9 +840,77 @@ def version_component_templates(
             }
         )
         seen.add(version)
-        if len(templates) >= limit:
-            break
-    return templates
+    templates.sort(key=lambda item: version_component_list_sort_key(item, component), reverse=True)
+    return templates[:limit]
+
+
+def save_version_component_template(
+    group_name: str,
+    component: str,
+    version: str,
+    description: str,
+    worker: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if component == "algo" and not version_group_uses_algo(group_name):
+        raise ValueError("This version group does not use Algo versions.")
+    version_value = version.strip()
+    if not version_value:
+        raise ValueError("Version is required.")
+
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    description_column = "sw_description" if component == "sw" else "algo_description"
+    timestamp = now_text()
+    with closing(connect(db_path)) as conn:
+        template_cursor = conn.execute(
+            f"""
+            UPDATE version_templates
+            SET {description_column} = ?, worker = ?, updated_at = ?
+            WHERE group_name = ? AND {version_column} = ?
+            """,
+            (description, worker, timestamp, group_name, version_value),
+        )
+        conn.execute(
+            f"""
+            UPDATE version_history
+            SET {description_column} = ?, worker = ?
+            WHERE group_name = ? AND {version_column} = ?
+            """,
+            (description, worker, group_name, version_value),
+        )
+        if template_cursor.rowcount == 0:
+            sw_version = version_value if component == "sw" else ""
+            algo_version = version_value if component == "algo" else ""
+            sw_description = description if component == "sw" else ""
+            algo_description = description if component == "algo" else ""
+            combined = combine_version_description(sw_description, algo_description, version_group_uses_algo(group_name))
+            conn.execute(
+                """
+                INSERT INTO version_templates (
+                    group_name, sw_version, algo_version, description, sw_description, algo_description,
+                    worker, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    group_name,
+                    sw_version,
+                    algo_version,
+                    combined,
+                    sw_description,
+                    algo_description,
+                    worker,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        refresh_combined_version_descriptions(conn, "version_templates", group_name)
+        refresh_combined_version_descriptions(conn, "version_history", group_name)
+        conn.commit()
 
 
 def update_version_component_template(
@@ -1449,3 +1510,1012 @@ def header_key(header: str) -> str:
         "Description": "description",
         "Resolution Notes": "resolution_notes",
     }[header]
+
+
+# Online Apps Script / Google Sheets adapter. These wrappers preserve the local
+# SQLite implementation when no online config is present.
+import json as _json
+import os as _os
+import urllib.error as _urllib_error
+import urllib.request as _urllib_request
+
+_LOCAL_INITIALIZE_DATABASE = initialize_database
+_LOCAL_CREATE_ISSUE = create_issue
+_LOCAL_CREATE_ISSUES_FOR_LINES = create_issues_for_lines
+_LOCAL_UPDATE_ISSUE = update_issue
+_LOCAL_RESOLVE_ISSUE = resolve_issue
+_LOCAL_SET_ISSUE_STATUS = set_issue_status
+_LOCAL_DELETE_ISSUE = delete_issue
+_LOCAL_ACTIVE_ISSUES = active_issues
+_LOCAL_DASHBOARD_COUNTS = dashboard_counts
+_LOCAL_ISSUE_TIME_BOUNDS = issue_time_bounds
+_LOCAL_SEARCH_ISSUES = search_issues
+_LOCAL_GET_ISSUE = get_issue
+_LOCAL_SAVE_VERSION_TEMPLATE = save_version_template
+_LOCAL_RECENT_VERSION_TEMPLATES = recent_version_templates
+_LOCAL_GET_VERSION_TEMPLATE = get_version_template
+_LOCAL_VERSION_COMPONENT_TEMPLATES = version_component_templates
+_LOCAL_SAVE_VERSION_COMPONENT_TEMPLATE = save_version_component_template
+_LOCAL_UPDATE_VERSION_COMPONENT_TEMPLATE = update_version_component_template
+_LOCAL_DELETE_VERSION_COMPONENT_TEMPLATE = delete_version_component_template
+_LOCAL_UPDATE_VERSION_TEMPLATE = update_version_template
+_LOCAL_DELETE_VERSION_TEMPLATE = delete_version_template
+_LOCAL_LATEST_VERSION_BY_INSTRUMENT = latest_version_by_instrument
+_LOCAL_LATEST_DASHBOARD_VERSIONS = latest_dashboard_versions
+_LOCAL_VERSION_HISTORY_ROWS = version_history_rows
+_LOCAL_CREATE_VERSION_UPDATE = create_version_update
+
+_ISSUE_HEADERS = [
+    "id", "created_at", "issue_time", "resolved_time", "line", "instrument", "worker",
+    "category", "subcategory", "title", "description", "status", "resolution_notes",
+]
+_TEMPLATE_HEADERS = [
+    "id", "group_name", "sw_version", "algo_version", "description", "sw_description",
+    "algo_description", "worker", "created_at", "updated_at",
+]
+_HISTORY_HEADERS = [
+    "id", "created_at", "update_time", "group_name", "line", "instrument", "sw_version",
+    "algo_version", "description", "sw_description", "algo_description", "sw_touched",
+    "algo_touched", "worker", "created_issue_id",
+]
+_NUMERIC_FIELDS = {"id", "created_issue_id", "sw_touched", "algo_touched"}
+
+
+def _config_path() -> Path:
+    override = _os.environ.get("VISION_TRACKER_CONFIG", "").strip()
+    if override:
+        return Path(override)
+    return APP_DIR / "config.json"
+
+
+def _load_online_config() -> dict[str, Any]:
+    path = _config_path()
+    if not path.exists():
+        return {}
+    try:
+        return _json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
+def _online_enabled(db_path: Path = DB_PATH) -> bool:
+    if Path(db_path) != DB_PATH:
+        return False
+    config = _load_online_config()
+    url = str(config.get("apps_script_url", ""))
+    token = str(config.get("api_token", ""))
+    return (
+        str(config.get("mode", "")).lower() == "online"
+        and url.startswith("https://script.google.com/")
+        and "PASTE_" not in url
+        and bool(token)
+        and "PASTE_" not in token
+    )
+
+
+def _online_request(action: str, **payload: Any) -> dict[str, Any]:
+    config = _load_online_config()
+    url = str(config.get("apps_script_url", ""))
+    token = str(config.get("api_token", ""))
+    timeout = int(config.get("request_timeout_seconds", 20) or 20)
+    body = dict(payload)
+    body["action"] = action
+    body["token"] = token
+    data = _json.dumps(body).encode("utf-8")
+    request = _urllib_request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _urllib_request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except _urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Online API HTTP {exc.code}: {raw}") from exc
+    except _urllib_error.URLError as exc:
+        raise ValueError(f"Online API connection failed: {exc.reason}") from exc
+    result = _json.loads(raw)
+    if not result.get("ok"):
+        raise ValueError(str(result.get("error") or "Online API request failed."))
+    return result
+
+
+def _normalize_online_row(table: str, row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    headers = {
+        "issues": _ISSUE_HEADERS,
+        "version_templates": _TEMPLATE_HEADERS,
+        "version_history": _HISTORY_HEADERS,
+    }[table]
+    normalized: dict[str, Any] = {}
+    for header in headers:
+        value = row.get(header, "")
+        if header in _NUMERIC_FIELDS:
+            normalized[header] = int(value) if str(value).strip() not in {"", "None"} else 0
+        else:
+            normalized[header] = "" if value is None else str(value)
+    return normalized
+
+
+def _online_rows(table: str) -> list[dict[str, Any]]:
+    rows = _online_request("list", table=table).get("rows", [])
+    return [_normalize_online_row(table, row) for row in rows]
+
+
+def _online_get(table: str, row_id: int) -> dict[str, Any] | None:
+    row = _online_request("get", table=table, id=row_id).get("row")
+    return _normalize_online_row(table, row)
+
+
+def _online_append(table: str, row: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_online_row(table, _online_request("append", table=table, row=row).get("row"))
+
+
+def _online_bulk_append(table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    created = _online_request("bulkAppend", table=table, rows=rows).get("rows", [])
+    return [_normalize_online_row(table, row) for row in created]
+
+
+def _online_update(table: str, row_id: int, row: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_online_row(table, _online_request("update", table=table, id=row_id, row=row).get("row"))
+
+
+def _online_delete(table: str, row_id: int) -> None:
+    _online_request("delete", table=table, id=row_id)
+
+
+def _issue_to_online_row(issue: IssueInput, created_at: str | None = None) -> dict[str, Any]:
+    return {
+        "created_at": created_at or now_text(),
+        "issue_time": issue.issue_time,
+        "resolved_time": issue.resolved_time,
+        "line": issue.line,
+        "instrument": issue.instrument,
+        "worker": issue.worker,
+        "category": issue.category,
+        "subcategory": issue.subcategory,
+        "title": issue.title,
+        "description": issue.description,
+        "status": issue.status,
+        "resolution_notes": issue.resolution_notes,
+    }
+
+
+def _sorted_issues(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rows, key=lambda row: (row.get("issue_time", ""), int(row.get("id", 0))))
+
+
+def _issue_matches_filters(row: dict[str, Any], filters: dict[str, str]) -> bool:
+    for field in ["status", "line", "category", "subcategory", "worker"]:
+        value = filters.get(field, "").strip()
+        if value and row.get(field, "") != value:
+            return False
+    selected_instruments = split_instruments(filters.get("instrument", "").strip())
+    if selected_instruments:
+        row_instruments = set(split_instruments(row.get("instrument", "")))
+        if not any(instrument in row_instruments for instrument in selected_instruments):
+            return False
+    date_from = filters.get("date_from", "").strip()
+    date_to = filters.get("date_to", "").strip()
+    issue_time = row.get("issue_time", "")
+    if date_from and issue_time < date_from:
+        return False
+    if date_to and issue_time > date_to:
+        return False
+    keyword = filters.get("keyword", "").strip().lower()
+    if keyword:
+        text = " ".join(str(row.get(field, "")) for field in ["title", "description", "resolution_notes"]).lower()
+        if keyword not in text:
+            return False
+    return True
+
+
+def _sort_by_updated(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rows, key=lambda row: (row.get("updated_at", ""), int(row.get("id", 0))), reverse=True)
+
+
+def _online_version_component_description(group_name: str, component: str, version: str) -> str:
+    if not version.strip():
+        return ""
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    for row in _sort_by_updated(_online_rows("version_templates")):
+        if row["group_name"] == group_name and row[version_column] == version.strip():
+            sw_description, algo_description = version_description_parts(row)
+            description = sw_description if component == "sw" else algo_description
+            if description:
+                return description
+    return ""
+
+
+def _combined_for_online_row(row: dict[str, Any]) -> str:
+    return combine_version_description(
+        row.get("sw_description", ""),
+        row.get("algo_description", ""),
+        version_group_uses_algo(row.get("group_name", "")),
+    )
+
+
+def initialize_database(db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_INITIALIZE_DATABASE(db_path)
+    _online_request("init")
+
+
+def create_issue(issue: IssueInput, db_path: Path = DB_PATH) -> int:
+    if not _online_enabled(db_path):
+        return _LOCAL_CREATE_ISSUE(issue, db_path)
+    errors = validate_issue(issue)
+    if errors:
+        raise ValueError("\n".join(errors))
+    row = _online_append("issues", _issue_to_online_row(issue))
+    return int(row["id"])
+
+
+def create_issues_for_lines(issue: IssueInput, lines: list[str] | tuple[str, ...] | set[str], db_path: Path = DB_PATH) -> list[int]:
+    if not _online_enabled(db_path):
+        return _LOCAL_CREATE_ISSUES_FOR_LINES(issue, lines, db_path)
+    requested_lines = [line.strip() for line in lines if line.strip()]
+    if not requested_lines:
+        raise ValueError("Line is required.")
+    invalid_lines = [line for line in requested_lines if line not in LINES]
+    if invalid_lines:
+        raise ValueError("Line is not valid.")
+    selected_lines = [line for line in LINES if line in requested_lines]
+    created_at = now_text()
+    rows = []
+    for line in selected_lines:
+        line_issue = IssueInput(**{**issue.__dict__, "line": line})
+        errors = validate_issue(line_issue)
+        if errors:
+            raise ValueError("\n".join(errors))
+        rows.append(_issue_to_online_row(line_issue, created_at=created_at))
+    return [int(row["id"]) for row in _online_bulk_append("issues", rows)]
+
+
+def update_issue(issue_id: int, issue: IssueInput, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_UPDATE_ISSUE(issue_id, issue, db_path)
+    errors = validate_issue(issue)
+    if errors:
+        raise ValueError("\n".join(errors))
+    _online_update("issues", issue_id, _issue_to_online_row(issue))
+
+
+def resolve_issue(issue_id: int, notes: str = "", db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_RESOLVE_ISSUE(issue_id, notes, db_path)
+    updates: dict[str, Any] = {"status": "Resolved"}
+    if notes:
+        updates["resolution_notes"] = notes
+    _online_update("issues", issue_id, updates)
+
+
+def set_issue_status(issue_id: int, status: str, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_SET_ISSUE_STATUS(issue_id, status, db_path)
+    if status not in STATUS_OPTIONS:
+        raise ValueError("Status is not valid.")
+    _online_update("issues", issue_id, {"status": status})
+
+
+def delete_issue(issue_id: int, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_DELETE_ISSUE(issue_id, db_path)
+    _online_delete("issues", issue_id)
+
+
+def active_issues(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_ACTIVE_ISSUES(db_path)
+    return _sorted_issues([row for row in _online_rows("issues") if row.get("status") in ACTIVE_STATUS_OPTIONS])
+
+
+def dashboard_counts(db_path: Path = DB_PATH) -> dict[str, int]:
+    if not _online_enabled(db_path):
+        return _LOCAL_DASHBOARD_COUNTS(db_path)
+    today = datetime.now().strftime("%Y-%m-%d")
+    counts: dict[str, int] = {}
+    for row in _online_rows("issues"):
+        status = row.get("status", "")
+        counts[status] = counts.get(status, 0) + 1
+    counts["Resolved Today"] = sum(
+        1
+        for row in _online_rows("issues")
+        if row.get("status") == "Resolved" and f"{today} 00:00" <= row.get("issue_time", "") < f"{today} 23:59"
+    )
+    counts["Active"] = sum(counts.get(status, 0) for status in ACTIVE_STATUS_OPTIONS)
+    return counts
+
+
+def issue_time_bounds(db_path: Path = DB_PATH) -> tuple[str, str]:
+    if not _online_enabled(db_path):
+        return _LOCAL_ISSUE_TIME_BOUNDS(db_path)
+    today = datetime.now().strftime("%Y-%m-%d")
+    times = [row.get("issue_time", "") for row in _online_rows("issues") if row.get("issue_time")]
+    if not times:
+        return f"{today} 00:00", f"{today} 23:59"
+    return min(times), max(times)
+
+
+def search_issues(filters: dict[str, str] | None = None, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_SEARCH_ISSUES(filters, db_path)
+    filters = filters or {}
+    return _sorted_issues([row for row in _online_rows("issues") if _issue_matches_filters(row, filters)])
+
+
+def get_issue(issue_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
+    if not _online_enabled(db_path):
+        return _LOCAL_GET_ISSUE(issue_id, db_path)
+    return _online_get("issues", issue_id)
+
+
+def save_version_template(
+    group_name: str,
+    sw_version: str,
+    algo_version: str,
+    description: str,
+    worker: str,
+    db_path: Path = DB_PATH,
+    sw_description: str | None = None,
+    algo_description: str | None = None,
+) -> int:
+    if not _online_enabled(db_path):
+        return _LOCAL_SAVE_VERSION_TEMPLATE(group_name, sw_version, algo_version, description, worker, db_path, sw_description, algo_description)
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if not sw_version.strip():
+        raise ValueError("SW Version is required.")
+    if version_group_uses_algo(group_name) and not algo_version.strip():
+        raise ValueError("Algo Version is required.")
+    if sw_description is None and algo_description is None:
+        sw_description_value, algo_description_value = split_version_description(description)
+    else:
+        sw_description_value = (sw_description or "").strip()
+        algo_description_value = (algo_description or "").strip()
+    if not version_group_uses_algo(group_name):
+        algo_description_value = ""
+    if not sw_description_value:
+        sw_description_value = _online_version_component_description(group_name, "sw", sw_version)
+    if version_group_uses_algo(group_name) and not algo_description_value:
+        algo_description_value = _online_version_component_description(group_name, "algo", algo_version)
+    combined_description = combine_version_description(sw_description_value, algo_description_value, version_group_uses_algo(group_name)) or description
+    timestamp = now_text()
+    templates = _online_rows("version_templates")
+    existing = None
+    for row in sorted(templates, key=lambda item: int(item.get("id", 0)), reverse=True):
+        if row["group_name"] == group_name and row["sw_version"] == sw_version.strip() and row["algo_version"] == algo_version.strip():
+            existing = row
+            break
+    row_data = {
+        "group_name": group_name,
+        "sw_version": sw_version.strip(),
+        "algo_version": algo_version.strip(),
+        "description": combined_description,
+        "sw_description": sw_description_value,
+        "algo_description": algo_description_value,
+        "worker": worker,
+        "updated_at": timestamp,
+    }
+    if existing:
+        updated = _online_update("version_templates", int(existing["id"]), row_data)
+        return int(updated["id"])
+    row_data["created_at"] = timestamp
+    created = _online_append("version_templates", row_data)
+    return int(created["id"])
+
+
+def recent_version_templates(group_name: str, limit: int = 3, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_RECENT_VERSION_TEMPLATES(group_name, limit, db_path)
+    return _sort_by_updated([row for row in _online_rows("version_templates") if row["group_name"] == group_name])[:limit]
+
+
+def get_version_template(template_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
+    if not _online_enabled(db_path):
+        return _LOCAL_GET_VERSION_TEMPLATE(template_id, db_path)
+    return _online_get("version_templates", template_id)
+
+
+def version_component_templates(group_name: str, component: str, limit: int = 50, db_path: Path = DB_PATH) -> list[dict[str, str]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_VERSION_COMPONENT_TEMPLATES(group_name, component, limit, db_path)
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if component == "algo" and not version_group_uses_algo(group_name):
+        return []
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    templates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in _sort_by_updated([row for row in _online_rows("version_templates") if row["group_name"] == group_name]):
+        version = row.get(version_column, "").strip()
+        if not version or version in seen:
+            continue
+        sw_description, algo_description = version_description_parts(row)
+        templates.append({
+            "id": str(row["id"]),
+            "group_name": row["group_name"],
+            "component": component,
+            "version": version,
+            "description": sw_description if component == "sw" else algo_description,
+            "worker": row["worker"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        })
+        seen.add(version)
+    templates.sort(key=lambda item: version_component_list_sort_key(item, component), reverse=True)
+    return templates[:limit]
+
+
+def save_version_component_template(group_name: str, component: str, version: str, description: str, worker: str, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_SAVE_VERSION_COMPONENT_TEMPLATE(group_name, component, version, description, worker, db_path)
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if component == "algo" and not version_group_uses_algo(group_name):
+        raise ValueError("This version group does not use Algo versions.")
+    version_value = version.strip()
+    if not version_value:
+        raise ValueError("Version is required.")
+
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    description_column = "sw_description" if component == "sw" else "algo_description"
+    timestamp = now_text()
+    matching_templates = [
+        row for row in _sort_by_updated(_online_rows("version_templates"))
+        if row["group_name"] == group_name and row.get(version_column) == version_value
+    ]
+    if matching_templates:
+        for row in matching_templates:
+            updates = {description_column: description, "worker": worker, "updated_at": timestamp}
+            merged = {**row, **updates}
+            updates["description"] = _combined_for_online_row(merged)
+            _online_update("version_templates", int(row["id"]), updates)
+    else:
+        sw_description = description if component == "sw" else ""
+        algo_description = description if component == "algo" else ""
+        row_data = {
+            "group_name": group_name,
+            "sw_version": version_value if component == "sw" else "",
+            "algo_version": version_value if component == "algo" else "",
+            "description": combine_version_description(sw_description, algo_description, version_group_uses_algo(group_name)),
+            "sw_description": sw_description,
+            "algo_description": algo_description,
+            "worker": worker,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        _online_append("version_templates", row_data)
+
+    for row in list(_online_rows("version_history")):
+        if row["group_name"] == group_name and row.get(version_column) == version_value:
+            updates = {description_column: description, "worker": worker}
+            merged = {**row, **updates}
+            updates["description"] = _combined_for_online_row(merged)
+            _online_update("version_history", int(row["id"]), updates)
+
+
+def update_version_component_template(group_name: str, component: str, old_version: str, new_version: str, description: str, worker: str, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_UPDATE_VERSION_COMPONENT_TEMPLATE(group_name, component, old_version, new_version, description, worker, db_path)
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if component == "algo" and not version_group_uses_algo(group_name):
+        raise ValueError("This version group does not use Algo versions.")
+    if not old_version.strip():
+        raise ValueError("Select a version first.")
+    if not new_version.strip():
+        raise ValueError("Version is required.")
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    description_column = "sw_description" if component == "sw" else "algo_description"
+    timestamp = now_text()
+    for table in ["version_templates", "version_history"]:
+        for row in _online_rows(table):
+            if row["group_name"] == group_name and row.get(version_column) == old_version.strip():
+                updates = {version_column: new_version.strip(), description_column: description, "worker": worker}
+                if table == "version_templates":
+                    updates["updated_at"] = timestamp
+                merged = {**row, **updates}
+                updates["description"] = _combined_for_online_row(merged)
+                _online_update(table, int(row["id"]), updates)
+
+
+def delete_version_component_template(group_name: str, component: str, version: str, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_DELETE_VERSION_COMPONENT_TEMPLATE(group_name, component, version, db_path)
+    if group_name not in VERSION_GROUPS:
+        raise ValueError("Version group is not valid.")
+    if component not in {"sw", "algo"}:
+        raise ValueError("Version component is not valid.")
+    if not version.strip():
+        return
+    version_column = "sw_version" if component == "sw" else "algo_version"
+    for table in ["version_templates", "version_history"]:
+        for row in _online_rows(table):
+            if row["group_name"] == group_name and row.get(version_column) == version.strip():
+                _online_delete(table, int(row["id"]))
+
+
+def update_version_template(template_id: int, sw_version: str, algo_version: str, description: str, worker: str, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_UPDATE_VERSION_TEMPLATE(template_id, sw_version, algo_version, description, worker, db_path)
+    template = _online_get("version_templates", template_id)
+    if template is None:
+        raise ValueError("Version template was not found.")
+    if not sw_version.strip():
+        raise ValueError("SW Version is required.")
+    if version_group_uses_algo(template["group_name"]) and not algo_version.strip():
+        raise ValueError("Algo Version is required.")
+    sw_description, algo_description = split_version_description(description)
+    if not version_group_uses_algo(template["group_name"]):
+        algo_description = ""
+    updates = {
+        "sw_version": sw_version.strip(),
+        "algo_version": algo_version.strip(),
+        "description": description,
+        "sw_description": sw_description,
+        "algo_description": algo_description,
+        "worker": worker,
+        "updated_at": now_text(),
+    }
+    _online_update("version_templates", template_id, updates)
+    for row in _online_rows("version_history"):
+        if row["group_name"] == template["group_name"] and row["sw_version"] == template["sw_version"] and row["algo_version"] == template["algo_version"]:
+            history_updates = dict(updates)
+            history_updates.pop("updated_at", None)
+            _online_update("version_history", int(row["id"]), history_updates)
+
+
+def delete_version_template(template_id: int, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_DELETE_VERSION_TEMPLATE(template_id, db_path)
+    template = _online_get("version_templates", template_id)
+    if template is None:
+        return
+    _online_delete("version_templates", template_id)
+    for row in _online_rows("version_history"):
+        if row["group_name"] == template["group_name"] and row["sw_version"] == template["sw_version"] and row["algo_version"] == template["algo_version"]:
+            _online_delete("version_history", int(row["id"]))
+
+
+def latest_version_by_instrument(db_path: Path = DB_PATH) -> dict[tuple[str, str], dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_LATEST_VERSION_BY_INSTRUMENT(db_path)
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in sorted(_online_rows("version_history"), key=lambda item: (item.get("update_time", ""), int(item.get("id", 0)))):
+        latest[(row["line"], row["instrument"])] = row
+    return latest
+
+
+def latest_dashboard_versions(db_path: Path = DB_PATH) -> dict[tuple[str, str], dict[str, str]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_LATEST_DASHBOARD_VERSIONS(db_path)
+    states: dict[tuple[str, str], dict[str, str]] = {}
+    for row in sorted(_online_rows("version_history"), key=lambda item: int(item.get("id", 0))):
+        key = (row["line"], row["instrument"])
+        state = states.setdefault(key, {
+            "line": row["line"],
+            "instrument": row["instrument"],
+            "group_name": row["group_name"],
+            "sw_version": "",
+            "algo_version": "",
+            "update_time": "",
+            "sw_update_time": "",
+            "algo_update_time": "",
+        })
+        sw_touched, algo_touched = version_history_component_flags(row)
+        if sw_touched:
+            state["sw_version"] = row["sw_version"] or ""
+            state["sw_update_time"] = row["update_time"] or ""
+            state["group_name"] = row["group_name"]
+            state["update_time"] = row["update_time"] or state["update_time"]
+        if instrument_uses_algo(row["instrument"]) and algo_touched:
+            state["algo_version"] = row["algo_version"] or ""
+            state["algo_update_time"] = row["update_time"] or ""
+            state["group_name"] = row["group_name"]
+            state["update_time"] = row["update_time"] or state["update_time"]
+    return states
+
+
+def version_history_rows(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_VERSION_HISTORY_ROWS(db_path)
+    return sorted(_online_rows("version_history"), key=lambda row: (row.get("update_time", ""), int(row.get("id", 0))), reverse=True)
+
+
+def create_version_update(version: VersionInput, create_program_update_issue: bool = True, db_path: Path = DB_PATH) -> int:
+    if not _online_enabled(db_path):
+        return _LOCAL_CREATE_VERSION_UPDATE(version, create_program_update_issue, db_path)
+    errors = validate_version_update(version)
+    if errors:
+        raise ValueError("\n".join(errors))
+    uses_algo = version_group_uses_algo(version.group_name)
+    sw_description = version.sw_description.strip()
+    algo_description = version.algo_description.strip()
+    if not sw_description and not algo_description:
+        sw_description, algo_description = split_version_description(version.description)
+    if not uses_algo:
+        algo_description = ""
+    has_entered_description = bool(sw_description or algo_description)
+    sw_touched = bool(sw_description) or not has_entered_description or not uses_algo
+    algo_touched = uses_algo and (bool(algo_description) or not has_entered_description)
+    if sw_touched and not sw_description:
+        sw_description = _online_version_component_description(version.group_name, "sw", version.sw_version)
+    if algo_touched and not algo_description:
+        algo_description = _online_version_component_description(version.group_name, "algo", version.algo_version)
+    description = combine_version_description(sw_description, algo_description, uses_algo) or version.description
+    save_version_template(
+        version.group_name,
+        version.sw_version,
+        version.algo_version,
+        description,
+        version.worker,
+        db_path,
+        sw_description=sw_description,
+        algo_description=algo_description,
+    )
+    created_issue_id: int | None = None
+    if create_program_update_issue:
+        version_text = f"SW {version.sw_version}"
+        if instrument_uses_algo(version.instrument):
+            version_text = f"{version_text} / Algo {version.algo_version}"
+        issue = IssueInput(
+            issue_time=version.update_time,
+            resolved_time="00:00",
+            line=version.line,
+            instrument=version.instrument,
+            worker=version.worker,
+            category="Software",
+            subcategory="Program Update",
+            title=f"Program Update - {version.line} {version.instrument} {version_text}",
+            description=description,
+            status="Monitoring",
+        )
+        created_issue_id = create_issue(issue, db_path)
+    created = _online_append("version_history", {
+        "created_at": now_text(),
+        "update_time": version.update_time,
+        "group_name": version.group_name,
+        "line": version.line,
+        "instrument": version.instrument,
+        "sw_version": version.sw_version,
+        "algo_version": version.algo_version,
+        "description": description,
+        "sw_description": sw_description,
+        "algo_description": algo_description,
+        "sw_touched": 1 if sw_touched else 0,
+        "algo_touched": 1 if algo_touched else 0,
+        "worker": version.worker,
+        "created_issue_id": created_issue_id or "",
+    })
+    return int(created["id"])
+
+# Online 1.1 cache overlay. This intentionally sits after the first online
+# adapter so existing high-level functions reuse these optimized low-level calls.
+import uuid as _uuid
+
+def _online_cache_path() -> Path:
+    base = _os.environ.get("LOCALAPPDATA") or _os.environ.get("APPDATA")
+    if base:
+        return Path(base) / "VisionIssueTracker" / "online_cache.db"
+    return APP_DIR / "data" / "online_cache.db"
+
+
+_ONLINE_CACHE_PATH = _online_cache_path()
+_ONLINE_SCHEMA_VERSION = "online_1_1"
+
+for _header in ["updated_at", "deleted_at", "client_request_id"]:
+    if _header not in _ISSUE_HEADERS:
+        _ISSUE_HEADERS.append(_header)
+for _header in ["deleted_at", "client_request_id"]:
+    if _header not in _TEMPLATE_HEADERS:
+        _TEMPLATE_HEADERS.append(_header)
+for _header in ["updated_at", "deleted_at", "client_request_id"]:
+    if _header not in _HISTORY_HEADERS:
+        _HISTORY_HEADERS.append(_header)
+
+_TABLE_HEADERS = {
+    "issues": _ISSUE_HEADERS,
+    "version_templates": _TEMPLATE_HEADERS,
+    "version_history": _HISTORY_HEADERS,
+}
+
+
+def online_mode(db_path: Path = DB_PATH) -> bool:
+    return _online_enabled(db_path)
+
+
+def _to_online_int(value: Any) -> int:
+    text = str(value).strip()
+    if text in {"", "None", "none", "null"}:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        return int(float(text))
+
+
+def _normalize_online_row(table: str, row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    normalized: dict[str, Any] = {}
+    for header in _TABLE_HEADERS[table]:
+        value = row.get(header, "")
+        if header in _NUMERIC_FIELDS:
+            normalized[header] = _to_online_int(value)
+        else:
+            normalized[header] = "" if value is None else str(value)
+    return normalized
+
+
+def _online_cache_connect() -> sqlite3.Connection:
+    _ONLINE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_ONLINE_CACHE_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS online_rows (
+            table_name TEXT NOT NULL,
+            row_id INTEGER NOT NULL,
+            row_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT '',
+            deleted_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (table_name, row_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS online_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO online_state(key, value) VALUES('schema_version', ?)",
+        (_ONLINE_SCHEMA_VERSION,),
+    )
+    conn.commit()
+    return conn
+
+
+def _online_cache_init() -> None:
+    with closing(_online_cache_connect()):
+        pass
+
+
+def _online_cache_get_state(key: str) -> str:
+    with closing(_online_cache_connect()) as conn:
+        row = conn.execute("SELECT value FROM online_state WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else ""
+
+
+def _online_cache_set_state(key: str, value: str) -> None:
+    with closing(_online_cache_connect()) as conn:
+        conn.execute("INSERT OR REPLACE INTO online_state(key, value) VALUES(?, ?)", (key, value))
+        conn.commit()
+
+
+def _online_cache_rows(table: str, include_deleted: bool = False) -> list[dict[str, Any]]:
+    with closing(_online_cache_connect()) as conn:
+        query = "SELECT row_json FROM online_rows WHERE table_name = ?"
+        if not include_deleted:
+            query += " AND deleted_at = ''"
+        rows = [
+            _normalize_online_row(table, _json.loads(row["row_json"]))
+            for row in conn.execute(query, (table,))
+        ]
+    return sorted([row for row in rows if row is not None], key=lambda row: int(row.get("id", 0)))
+
+
+def _online_cache_get(table: str, row_id: int) -> dict[str, Any] | None:
+    with closing(_online_cache_connect()) as conn:
+        row = conn.execute(
+            "SELECT row_json FROM online_rows WHERE table_name = ? AND row_id = ? AND deleted_at = ''",
+            (table, row_id),
+        ).fetchone()
+        if not row:
+            return None
+        return _normalize_online_row(table, _json.loads(row["row_json"]))
+
+
+def _online_cache_apply_rows(table: str, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    with closing(_online_cache_connect()) as conn:
+        for raw in rows:
+            row = _normalize_online_row(table, raw)
+            if row is None:
+                continue
+            row_id = int(row.get("id", 0))
+            if row_id <= 0:
+                continue
+            if row.get("deleted_at", ""):
+                conn.execute("DELETE FROM online_rows WHERE table_name = ? AND row_id = ?", (table, row_id))
+                continue
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO online_rows(table_name, row_id, row_json, updated_at, deleted_at)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (
+                    table,
+                    row_id,
+                    _json.dumps(row, ensure_ascii=False),
+                    row.get("updated_at", ""),
+                    row.get("deleted_at", ""),
+                ),
+            )
+        conn.commit()
+
+
+def _online_cache_replace_rows(table: str, rows: list[dict[str, Any]]) -> None:
+    with closing(_online_cache_connect()) as conn:
+        conn.execute("DELETE FROM online_rows WHERE table_name = ?", (table,))
+        conn.commit()
+    _online_cache_apply_rows(table, rows)
+
+
+def _online_cache_delete(table: str, row_id: int) -> None:
+    with closing(_online_cache_connect()) as conn:
+        conn.execute("DELETE FROM online_rows WHERE table_name = ? AND row_id = ?", (table, row_id))
+        conn.commit()
+
+
+def _safe_online_cache_apply_rows(table: str, rows: list[dict[str, Any]]) -> None:
+    try:
+        _online_cache_apply_rows(table, rows)
+    except Exception:
+        # The online write already succeeded. Cache failures should not make a saved issue look failed.
+        pass
+
+
+def _safe_online_cache_delete(table: str, row_id: int) -> None:
+    try:
+        _online_cache_delete(table, row_id)
+    except Exception:
+        pass
+
+
+def _normalize_row_list(table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows or []:
+        item = _normalize_online_row(table, row)
+        if item is not None:
+            normalized.append(item)
+    return normalized
+
+
+def _apply_sync_result(result: dict[str, Any], replace: bool) -> None:
+    tables = result.get("tables", {})
+    for table in _TABLE_HEADERS:
+        rows = _normalize_row_list(table, tables.get(table, []))
+        if replace:
+            _online_cache_replace_rows(table, rows)
+        else:
+            _online_cache_apply_rows(table, rows)
+    server_time = str(result.get("server_time") or now_text())
+    _online_cache_set_state("last_sync_at", server_time)
+    if replace:
+        _online_cache_set_state("last_full_sync_at", server_time)
+
+
+def _online_legacy_full_refresh() -> None:
+    for table in _TABLE_HEADERS:
+        rows = _normalize_row_list(table, _online_request("list", table=table).get("rows", []))
+        _online_cache_replace_rows(table, rows)
+    timestamp = now_text()
+    _online_cache_set_state("last_sync_at", timestamp)
+    _online_cache_set_state("last_full_sync_at", timestamp)
+
+
+def refresh_online_cache(force_full: bool = False) -> None:
+    if not _online_enabled():
+        return
+    _online_cache_init()
+    last_sync = _online_cache_get_state("last_sync_at")
+    try:
+        if force_full or not last_sync:
+            _apply_sync_result(_online_request("bootstrap"), replace=True)
+        else:
+            _apply_sync_result(_online_request("changesSince", since=last_sync), replace=False)
+    except ValueError as exc:
+        if "Unknown action" in str(exc):
+            _online_legacy_full_refresh()
+            return
+        raise
+
+
+def initialize_database(db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_INITIALIZE_DATABASE(db_path)
+    _online_cache_init()
+
+
+def _online_rows(table: str) -> list[dict[str, Any]]:
+    return _online_cache_rows(table)
+
+
+def _online_get(table: str, row_id: int) -> dict[str, Any] | None:
+    row = _online_cache_get(table, row_id)
+    if row is not None:
+        return row
+    row = _normalize_online_row(table, _online_request("get", table=table, id=row_id).get("row"))
+    if row is not None:
+        _safe_online_cache_apply_rows(table, [row])
+    return row
+
+
+def _with_client_request_id(row: dict[str, Any]) -> dict[str, Any]:
+    prepared = dict(row)
+    prepared.setdefault("client_request_id", str(_uuid.uuid4()))
+    return prepared
+
+
+def _online_append(table: str, row: dict[str, Any]) -> dict[str, Any]:
+    created = _normalize_online_row(
+        table,
+        _online_request("append", table=table, row=_with_client_request_id(row)).get("row"),
+    )
+    if created is None:
+        raise ValueError("Online API did not return a created row.")
+    _safe_online_cache_apply_rows(table, [created])
+    return created
+
+
+def _online_bulk_append(table: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    created = _normalize_row_list(
+        table,
+        _online_request("bulkAppend", table=table, rows=[_with_client_request_id(row) for row in rows]).get("rows", []),
+    )
+    _safe_online_cache_apply_rows(table, created)
+    return created
+
+
+def _online_update(table: str, row_id: int, row: dict[str, Any]) -> dict[str, Any]:
+    updated = _normalize_online_row(
+        table,
+        _online_request("update", table=table, id=row_id, row=row).get("row"),
+    )
+    if updated is None:
+        raise ValueError("Online API did not return an updated row.")
+    _safe_online_cache_apply_rows(table, [updated])
+    return updated
+
+
+def _online_delete(table: str, row_id: int) -> None:
+    deleted = _normalize_online_row(table, _online_request("delete", table=table, id=row_id).get("row"))
+    if deleted is not None:
+        _safe_online_cache_apply_rows(table, [deleted])
+    else:
+        _safe_online_cache_delete(table, row_id)
+
+
+def search_issues(filters: dict[str, str] | None = None, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_SEARCH_ISSUES(filters, db_path)
+    filters = filters or {}
+    rows = _online_rows("issues")
+    if not rows:
+        try:
+            server_rows = _normalize_row_list(
+                "issues",
+                _online_request("searchIssues", filters=filters).get("rows", []),
+            )
+            if not any(str(value).strip() for value in filters.values()):
+                _online_cache_replace_rows("issues", server_rows)
+            return _sorted_issues([row for row in server_rows if _issue_matches_filters(row, filters)])
+        except ValueError:
+            return []
+    return _sorted_issues([row for row in rows if _issue_matches_filters(row, filters)])
+
