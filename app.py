@@ -21,7 +21,8 @@ from vision_tracker import (
     APP_TITLE,
     CATEGORIES,
     CATEGORY_MAP,
-    DL_CHANGE_TYPES,
+    DL_TRAINING_CHANGE_TYPES,
+    DL_APPLICATION_CHANGE_TYPES,
     DL_INSTRUMENTS,
     DL_MACHINE_KEYS,
     DL_MACHINE_TARGETS,
@@ -1799,7 +1800,7 @@ class VisionIssueApp(tk.Tk):
         panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         panel.columnconfigure(1, weight=1)
         self.dl_register_version_var = tk.StringVar()
-        self.dl_register_change_var = tk.StringVar(value=DL_CHANGE_TYPES[-1])
+        self.dl_register_change_var = tk.StringVar(value=DL_TRAINING_CHANGE_TYPES[0])
         self.dl_register_time_var = tk.StringVar(value=now_text())
         self.dl_register_issue_var = tk.BooleanVar(value=True)
         self.dl_register_targets: set[str] = set()
@@ -1808,7 +1809,7 @@ class VisionIssueApp(tk.Tk):
         self.tr_label(panel, "Register Trained Model", style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.add_dl_target_selector(panel, 1, self.dl_register_targets, self.dl_register_target_buttons, self.toggle_dl_register_target)
         self.add_labeled_entry(panel, "Model Version", self.dl_register_version_var, 2, 0)
-        self.add_labeled_combo(panel, "Change Type", self.dl_register_change_var, DL_CHANGE_TYPES, 3, 0)
+        self.add_labeled_combo(panel, "Change Type", self.dl_register_change_var, DL_TRAINING_CHANGE_TYPES, 3, 0)
         self.add_labeled_entry(panel, "Trained Time", self.dl_register_time_var, 4, 0)
         self.add_labeled_combo(panel, "Logged By", self.current_worker_var, WORKERS, 5, 0)
         self.dl_register_issue_button = tk.Button(panel, anchor="w", relief="raised", command=self.toggle_dl_register_issue_option)
@@ -1828,7 +1829,7 @@ class VisionIssueApp(tk.Tk):
         panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         panel.columnconfigure(1, weight=1)
         self.dl_apply_version_var = tk.StringVar()
-        self.dl_apply_change_var = tk.StringVar(value=DL_CHANGE_TYPES[-1])
+        self.dl_apply_change_var = tk.StringVar(value=DL_APPLICATION_CHANGE_TYPES[0])
         self.dl_apply_time_var = tk.StringVar(value=now_text())
         self.dl_apply_issue_var = tk.BooleanVar(value=True)
         self.dl_apply_targets: set[str] = set()
@@ -1838,7 +1839,7 @@ class VisionIssueApp(tk.Tk):
         self.tr_label(panel, "Apply Model", style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.add_dl_target_selector(panel, 1, self.dl_apply_targets, self.dl_apply_target_buttons, self.toggle_dl_apply_target)
         self.add_labeled_entry(panel, "Model Version", self.dl_apply_version_var, 2, 0)
-        self.add_labeled_combo(panel, "Change Type", self.dl_apply_change_var, DL_CHANGE_TYPES, 3, 0)
+        self.add_labeled_combo(panel, "Change Type", self.dl_apply_change_var, DL_APPLICATION_CHANGE_TYPES, 3, 0)
         self.add_labeled_entry(panel, "Applied Time", self.dl_apply_time_var, 4, 0)
         self.add_labeled_combo(panel, "Logged By", self.current_worker_var, WORKERS, 5, 0)
         self.dl_apply_issue_button = tk.Button(panel, anchor="w", relief="raised", command=self.toggle_dl_apply_issue_option)
@@ -2040,7 +2041,7 @@ class VisionIssueApp(tk.Tk):
         self.dl_selected_trained_id = int(row["id"])
         self.dl_model_family_var.set(row["model_family"])
         self.dl_apply_version_var.set(row["model_version"])
-        self.dl_apply_change_var.set(row["change_type"])
+        self.dl_apply_change_var.set("Model Update")
         self.dl_apply_time_var.set(now_text())
         self.set_dl_apply_targets(set(split_dl_targets(row["target_machines"])))
         self.dl_apply_description_text.delete("1.0", "end")

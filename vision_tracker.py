@@ -74,6 +74,13 @@ DL_MODEL_FAMILIES = [
     "SEPA_SHOULDER",
 ]
 DL_CHANGE_TYPES = CATEGORY_MAP["Deep Learning"]
+DL_TRAINING_CHANGE_TYPES = [
+    "Overkill Training",
+    "Leakage Training",
+    "Overkill&Leakage",
+    "Dataset Major Change",
+]
+DL_APPLICATION_CHANGE_TYPES = ["Model Update", "Model Revert"]
 DL_TRAINED_STATUS_OPTIONS = ["Action Required", "Applied"]
 DL_INSTRUMENTS = ["Welding(-)", "Welding(+)"]
 DL_MACHINE_SEPARATOR = " / "
@@ -1481,7 +1488,7 @@ def validate_dl_trained_model(model: DeepLearningTrainedInput) -> list[str]:
         errors.append("Trained time must use YYYY-MM-DD HH:MM format.")
     if model.model_family not in DL_MODEL_FAMILIES:
         errors.append("Model family is not valid.")
-    if model.change_type not in DL_CHANGE_TYPES:
+    if model.change_type not in DL_TRAINING_CHANGE_TYPES:
         errors.append("Deep Learning change type is not valid.")
     if model.status not in DL_TRAINED_STATUS_OPTIONS:
         errors.append("Trained model status is not valid.")
@@ -1507,7 +1514,7 @@ def validate_dl_application(model: DeepLearningApplicationInput) -> list[str]:
         errors.append("Applied time must use YYYY-MM-DD HH:MM format.")
     if model.model_family not in DL_MODEL_FAMILIES:
         errors.append("Model family is not valid.")
-    if model.change_type not in DL_CHANGE_TYPES:
+    if model.change_type not in DL_APPLICATION_CHANGE_TYPES:
         errors.append("Deep Learning change type is not valid.")
     errors.extend(validate_dl_targets(model.target_machines))
     return errors
