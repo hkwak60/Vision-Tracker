@@ -2187,11 +2187,20 @@ def _online_request(action: str, **payload: Any) -> dict[str, Any]:
         with _urllib_request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
     except _urllib_error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise ValueError(f"Online API HTTP {exc.code}: {raw}") from exc
+        exc.close()
+        hint = "Check the deployed Apps Script URL and access settings in config.json."
+        raise ValueError(
+            f"Online API HTTP {exc.code}. {hint} "
+            "The save result is unconfirmed; refresh history before retrying."
+        ) from exc
     except _urllib_error.URLError as exc:
         raise ValueError(f"Online API connection failed: {exc.reason}") from exc
-    result = _json.loads(raw)
+    try:
+        result = _json.loads(raw)
+    except ValueError as exc:
+        raise ValueError("Online API returned a non-JSON response. Check the deployment URL and access settings.") from exc
+    if not isinstance(result, dict):
+        raise ValueError("Online API returned an invalid response.")
     if not result.get("ok"):
         raise ValueError(str(result.get("error") or "Online API request failed."))
     return result
@@ -3096,17 +3105,6 @@ def search_issues(filters: dict[str, str] | None = None, db_path: Path = DB_PATH
         return _LOCAL_SEARCH_ISSUES(filters, db_path)
     filters = filters or {}
     rows = _online_rows("issues")
-    if not rows:
-        try:
-            server_rows = _normalize_row_list(
-                "issues",
-                _online_request("searchIssues", filters=filters).get("rows", []),
-            )
-            if not any(str(value).strip() for value in filters.values()):
-                _online_cache_replace_rows("issues", server_rows)
-            return _sorted_issues([row for row in server_rows if _issue_matches_filters(row, filters)])
-        except ValueError:
-            return []
     return _sorted_issues([row for row in rows if _issue_matches_filters(row, filters)])
 
 

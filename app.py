@@ -4,6 +4,7 @@ import calendar
 import os
 import sys
 import threading
+import queue
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -358,7 +359,10 @@ class VisionIssueApp(tk.Tk):
         self.sync_status_state = state
         self.sync_status_detail = detail
         korean = self.language_var.get() == "한국어"
-        if state == "syncing":
+        if state == "saving":
+            text = "저장 중..." if korean else "Saving..."
+            color = "#2563eb"
+        elif state == "syncing":
             text = "온라인: 동기화 중..." if korean else "Online: Syncing..."
             color = "#2563eb"
         elif state == "synced":
@@ -1321,20 +1325,19 @@ class VisionIssueApp(tk.Tk):
         if not new_version:
             messagebox.showwarning(APP_TITLE, "Version is required.")
             return
-        try:
-            save_version_component_template(
-                self.version_description_group_var.get(),
-                component,
-                new_version,
-                description,
-                self.current_worker_var.get().strip(),
-            )
-        except ValueError as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
-            return
-        self.refresh_version_history()
-        self.select_version_description_component(component, new_version)
-        messagebox.showinfo(APP_TITLE, "Version saved.")
+        group_name = self.version_description_group_var.get()
+        selected_component = component
+        version = new_version
+        saved_description = description
+        worker = self.current_worker_var.get().strip()
+
+        def success():
+            self.refresh_version_history()
+            self.select_version_description_component(component, new_version)
+            messagebox.showinfo(APP_TITLE, "Version saved.")
+
+        self.run_record_save(
+            lambda: save_version_component_template(group_name, selected_component, version, saved_description, worker), success)
 
     def delete_selected_sw_version_template(self) -> None:
         self.delete_selected_version_component_template("sw")
@@ -1457,37 +1460,87 @@ class VisionIssueApp(tk.Tk):
         description = self.version_update_description_value()
         sw_description, algo_description = self.version_update_description_parts()
         algo_version = self.version_algo_var.get().strip() if version_group_uses_algo(self.version_group_var.get()) else ""
-        saved_count = 0
-        try:
-            for line in lines:
-                for instrument in instruments:
-                    create_version_update(
-                        VersionInput(
-                            update_time=self.version_update_time_var.get().strip(),
-                            group_name=self.version_group_var.get(),
-                            line=line,
-                            instrument=instrument,
-                            sw_version=self.version_sw_var.get().strip(),
-                            algo_version=algo_version,
-                            description=description,
-                            worker=self.current_worker_var.get().strip(),
-                            sw_description=sw_description,
-                            algo_description=algo_description,
-                        ),
-                        self.version_create_issue_var.get(),
-                    )
-                    saved_count += 1
-        except ValueError as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
-            return
-        self.refresh_version_history()
-        self.refresh_open_issues()
-        self.search_records()
-        messagebox.showinfo(APP_TITLE, f"{saved_count} version update record(s) saved.")
+        models = [VersionInput(
+            update_time=self.version_update_time_var.get().strip(),
+            group_name=self.version_group_var.get(), line=line, instrument=instrument,
+            sw_version=self.version_sw_var.get().strip(), algo_version=algo_version,
+            description=description, worker=self.current_worker_var.get().strip(),
+            sw_description=sw_description, algo_description=algo_description,
+        ) for line in lines for instrument in instruments]
+        create_issue = self.version_create_issue_var.get()
+
+        def work():
+            saved_count = 0
+            for model in models:
+                try:
+                    create_version_update(model, create_issue)
+                except Exception as exc:
+                    raise ValueError(f"{saved_count}/{len(models)} records confirmed saved. "
+                                     f"Check history before retrying. {exc}") from exc
+                saved_count += 1
+
+        def success():
+            self.refresh_version_history()
+            self.refresh_open_issues()
+            self.search_records()
+            messagebox.showinfo(APP_TITLE, f"{len(models)} version update record(s) saved.")
+
+        self.run_record_save(work, success)
 
     def refresh_version_history(self) -> None:
         self.populate_version_dashboard()
         self.populate_version_description_dashboard()
+
+    def run_record_save(self, work, on_success) -> None:
+        if getattr(self, "record_save_running", False):
+            return
+        self.record_save_running = True
+        self.set_sync_status("saving")
+        buttons = []
+        def collect(widget):
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Button) and str(child.cget("style")) == "Accent.TButton":
+                    buttons.append((child, child.instate(["disabled"])))
+                    child.state(["disabled"])
+                collect(child)
+        collect(self)
+        results = queue.Queue()
+
+        def worker():
+            try:
+                work()
+            except Exception as exc:
+                results.put(exc)
+            else:
+                results.put(None)
+
+        def finish():
+            try:
+                error = results.get_nowait()
+            except queue.Empty:
+                self.after(100, finish)
+                return
+            self.record_save_running = False
+            for button, disabled in buttons:
+                if button.winfo_exists() and not disabled:
+                    button.state(["!disabled"])
+            if error is not None:
+                self.set_sync_status("offline" if online_mode() else "local")
+                self.refresh_version_history()
+                self.refresh_deep_learning_models()
+                messagebox.showerror(APP_TITLE, str(error))
+            else:
+                self.set_sync_status("synced" if online_mode() else "local", datetime.now().strftime("%H:%M"))
+                on_success()
+
+        def start():
+            # Let any existing cache refresh finish before a write updates the cache.
+            if self.online_sync_running:
+                self.after(100, start)
+                return
+            threading.Thread(target=worker, daemon=True).start()
+            self.after(100, finish)
+        start()
 
     def sync_online_cache_async(
         self,
@@ -1512,7 +1565,7 @@ class VisionIssueApp(tk.Tk):
             if refresh_dl:
                 self.refresh_deep_learning_models()
             return
-        if self.online_sync_running:
+        if self.online_sync_running or getattr(self, "record_save_running", False):
             return
         self.online_sync_running = True
         self.set_sync_status("syncing")
@@ -1552,13 +1605,16 @@ class VisionIssueApp(tk.Tk):
         if refresh_search:
             self.search_records(preserve_view=preserve_view)
         if refresh_version:
-            self.refresh_version_history()
+            if quiet:
+                self.populate_version_dashboard()
+            else:
+                self.refresh_version_history()
         if refresh_dl:
             self.refresh_deep_learning_models()
 
     def periodic_online_sync(self) -> None:
         if online_mode():
-            self.sync_online_cache_async(refresh_open=True, refresh_search=True, refresh_version=False, quiet=True)
+            self.sync_online_cache_async(refresh_open=True, refresh_search=True, refresh_version=True, refresh_dl=True, quiet=True)
             self.after(30000, self.periodic_online_sync)
 
     def refresh_board_command(self) -> None:
@@ -1939,50 +1995,48 @@ class VisionIssueApp(tk.Tk):
         self.dl_apply_issue_button.configure(text=f"{marker} {self.text('Create Monitoring Issue')}")
 
     def save_dl_trained_model(self) -> None:
-        try:
-            create_dl_trained_model(
-                DeepLearningTrainedInput(
-                    trained_time=self.dl_register_time_var.get().strip(),
-                    model_family=self.dl_model_family_var.get().strip(),
-                    model_version=self.dl_register_version_var.get().strip(),
-                    change_type=self.dl_register_change_var.get().strip(),
-                    target_machines=tuple(self.dl_register_targets),
-                    worker=self.current_worker_var.get().strip(),
-                    description=self.dl_register_description_text.get("1.0", "end").strip(),
-                ),
-                self.dl_register_issue_var.get(),
-            )
-        except ValueError as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
-            return
-        self.refresh_deep_learning_models()
-        self.refresh_open_issues()
-        self.search_records()
-        messagebox.showinfo(APP_TITLE, "Trained model saved.")
+        model = DeepLearningTrainedInput(
+            trained_time=self.dl_register_time_var.get().strip(),
+            model_family=self.dl_model_family_var.get().strip(),
+            model_version=self.dl_register_version_var.get().strip(),
+            change_type=self.dl_register_change_var.get().strip(),
+            target_machines=tuple(self.dl_register_targets),
+            worker=self.current_worker_var.get().strip(),
+            description=self.dl_register_description_text.get("1.0", "end").strip(),
+        )
+        create_issue = self.dl_register_issue_var.get()
+
+        def success():
+            self.refresh_deep_learning_models()
+            self.refresh_open_issues()
+            self.search_records()
+            messagebox.showinfo(APP_TITLE, "Trained model saved.")
+
+        self.run_record_save(
+            lambda: create_dl_trained_model(model, create_issue), success)
 
     def save_dl_model_application(self) -> None:
-        try:
-            create_dl_model_application(
-                DeepLearningApplicationInput(
-                    applied_time=self.dl_apply_time_var.get().strip(),
-                    model_family=self.dl_model_family_var.get().strip(),
-                    model_version=self.dl_apply_version_var.get().strip(),
-                    change_type=self.dl_apply_change_var.get().strip(),
-                    target_machines=tuple(self.dl_apply_targets),
-                    worker=self.current_worker_var.get().strip(),
-                    description=self.dl_apply_description_text.get("1.0", "end").strip(),
-                ),
-                self.dl_apply_issue_var.get(),
-                self.dl_selected_trained_id,
-            )
-        except ValueError as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
-            return
-        self.dl_selected_trained_id = None
-        self.refresh_deep_learning_models()
-        self.refresh_open_issues()
-        self.search_records()
-        messagebox.showinfo(APP_TITLE, "Applied model saved.")
+        model = DeepLearningApplicationInput(
+            applied_time=self.dl_apply_time_var.get().strip(),
+            model_family=self.dl_model_family_var.get().strip(),
+            model_version=self.dl_apply_version_var.get().strip(),
+            change_type=self.dl_apply_change_var.get().strip(),
+            target_machines=tuple(self.dl_apply_targets),
+            worker=self.current_worker_var.get().strip(),
+            description=self.dl_apply_description_text.get("1.0", "end").strip(),
+        )
+        create_issue = self.dl_apply_issue_var.get()
+        trained_id = self.dl_selected_trained_id
+
+        def success():
+            self.dl_selected_trained_id = None
+            self.refresh_deep_learning_models()
+            self.refresh_open_issues()
+            self.search_records()
+            messagebox.showinfo(APP_TITLE, "Applied model saved.")
+
+        self.run_record_save(
+            lambda: create_dl_model_application(model, create_issue, trained_id), success)
 
     def refresh_deep_learning_models(self) -> None:
         if not hasattr(self, "dl_model_family_var"):
