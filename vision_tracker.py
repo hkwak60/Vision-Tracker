@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
 
@@ -1532,7 +1532,6 @@ def dl_issue_description(
         f"Model Family: {model_family}",
         f"Model Version: {model_version}",
         f"Change Type: {change_type}",
-        f"Scope: {scope}",
         f"Targets: {target_machines}",
     ]
     if description.strip():
@@ -1595,7 +1594,7 @@ def create_dl_trained_model(
         raise ValueError("\n".join(errors))
     targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
     target_text = serialize_dl_targets(targets)
-    scope = infer_dl_scope(targets)
+    scope = ""  # Legacy column retained for existing databases.
     created_issue_id = 0
     if create_action_issue:
         issue_ids = create_dl_issues_for_targets(
@@ -1649,7 +1648,7 @@ def create_dl_model_application(
     if errors:
         raise ValueError("\n".join(errors))
     targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
-    scope = infer_dl_scope(targets)
+    scope = ""  # Legacy column retained for existing databases.
     created_issue_ids: list[int] = []
     if create_monitoring_issue:
         created_issue_ids = create_dl_issues_for_targets(
@@ -1786,88 +1785,79 @@ def mark_dl_trained_model_status(
 
 
 def export_deep_learning_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH) -> None:
+    """Export cached/local model versions in the line-by-polarity reference layout."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     latest = latest_dl_applied_models(db_path=db_path)
     trained_rows = list_dl_trained_models(db_path=db_path)
     workbook = Workbook()
-    applied_sheet = workbook.active
-    applied_sheet.title = "Applied Models"
-    trained_sheet = workbook.create_sheet("Trained Models")
-
-    applied_headers = [
-        "Model Family",
-        "Line",
-        "Polarity",
-        "Instrument",
-        "Model Version",
-        "Scope",
-        "Time",
-        "Logged By",
-        "Description",
-    ]
-    trained_headers = [
-        "Status",
-        "Model Family",
-        "Model Version",
-        "Change Type",
-        "Scope",
-        "Target Machines",
-        "Time",
-        "Logged By",
-        "Description",
-    ]
-    applied_sheet.append(applied_headers)
-    trained_sheet.append(trained_headers)
-
-    for family in DL_MODEL_FAMILIES:
-        for target in DL_MACHINE_TARGETS:
-            row = latest.get((family, target["line"], target["instrument"]))
-            applied_sheet.append(
-                [
-                    family,
-                    target["line"],
-                    target["polarity"],
-                    target["instrument"],
-                    row["model_version"] if row else "",
-                    row["scope"] if row else "",
-                    row["applied_time"] if row else "",
-                    row["worker"] if row else "",
-                    row["description"] if row else "",
-                ]
+    sheet = workbook.active
+    sheet.title = "Applied Models"
+    sheet.merge_cells("A1:A2")
+    sheet["A1"] = "MODEL"
+    labels = {
+        "Crop_A": "A", "Crop_B": "B", "Crop_micro": "MICRO",
+        "Crop_micro_tabside": "MICRO_TABSIDE", "SEGMENTATION": "BEAD",
+    }
+    for index, line in enumerate(LINES):
+        column = 2 + index * 2
+        sheet.merge_cells(start_row=1, start_column=column, end_row=1, end_column=column + 1)
+        sheet.cell(1, column, line).number_format = "@"
+        sheet.cell(2, column, "ANODE")
+        sheet.cell(2, column + 1, "CATHODE")
+    for row_number, family in enumerate(DL_MODEL_FAMILIES, 3):
+        sheet.cell(row_number, 1, labels.get(family, family.upper()))
+        for column, target in enumerate(DL_MACHINE_TARGETS, 2):
+            model = latest.get((family, target["line"], target["instrument"]))
+            cell = sheet.cell(row_number, column, model["model_version"] if model else "")
+            cell.data_type = "s"
+            cell.number_format = "@"
+    thin = Side(style="thin", color="000000")
+    medium = Side(style="medium", color="000000")
+    for row in sheet:
+        for cell in row:
+            cell.font = Font(name="Calibri", size=11, color="000000")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = Border(
+                left=medium if cell.column == 1 else thin,
+                right=medium if cell.column == 9 else thin,
+                top=medium if cell.row == 1 else thin,
+                bottom=medium if cell.row == 12 else thin,
             )
-
+            if cell.column == 1 or cell.row == 2:
+                cell.fill = PatternFill("solid", fgColor="DCE6F1")
+            elif cell.row == 1:
+                cell.fill = PatternFill("solid", fgColor="1F4E78")
+                cell.font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    sheet.column_dimensions["A"].width = 18
+    for column in range(2, 10):
+        sheet.column_dimensions[get_column_letter(column)].width = 32.33
+    for row_number in range(1, 13):
+        sheet.row_dimensions[row_number].height = 30 if row_number > 2 else 22
+    sheet.sheet_view.showGridLines = False
+    sheet.print_options.horizontalCentered = True
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 1
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.print_area = "A1:I12"
+    trained = workbook.create_sheet("Trained Models")
+    headers = ["Status", "Model Family", "Model Version", "Change Type", "Target Machines", "Time", "Logged By", "Description"]
+    trained.append(headers)
     for row in trained_rows:
-        trained_sheet.append(
-            [
-                row["status"],
-                row["model_family"],
-                row["model_version"],
-                row["change_type"],
-                row["scope"],
-                row["target_machines"],
-                row["trained_time"],
-                row["worker"],
-                row["description"],
-            ]
-        )
-
-    for sheet in [applied_sheet, trained_sheet]:
-        for cell in sheet[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="1F4E78")
-            cell.alignment = Alignment(vertical="top")
-        for column_index, header in enumerate([cell.value for cell in sheet[1]], start=1):
-            column_letter = get_column_letter(column_index)
-            max_length = len(str(header or ""))
-            for cell in sheet[column_letter]:
-                max_length = max(max_length, len(str(cell.value or "")))
-                cell.alignment = Alignment(wrap_text=header == "Description", vertical="top")
-            if header == "Description":
-                sheet.column_dimensions[column_letter].width = 55
-            else:
-                sheet.column_dimensions[column_letter].width = min(max_length + 2, 28)
-        sheet.freeze_panes = "A2"
-
+        trained.append([row["status"], row["model_family"], row["model_version"], row["change_type"],
+                        row["target_machines"], row["trained_time"], row["worker"], row["description"]])
+    for row in trained:
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if cell.row == 1:
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", fgColor="1F4E78")
+    for column, width in enumerate([18, 22, 40, 25, 45, 22, 22, 55], 1):
+        trained.column_dimensions[get_column_letter(column)].width = width
+    trained.freeze_panes = "A2"
     workbook.save(output_path)
 
 
@@ -3120,7 +3110,7 @@ def create_dl_trained_model(
         raise ValueError("\n".join(errors))
     targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
     target_text = serialize_dl_targets(targets)
-    scope = infer_dl_scope(targets)
+    scope = ""  # Legacy column retained for existing databases.
     created_issue_id = 0
     if create_action_issue:
         issue_ids = create_dl_issues_for_targets(
@@ -3146,7 +3136,6 @@ def create_dl_trained_model(
             "model_version": model.model_version,
             "change_type": model.change_type,
             "target_machines": target_text,
-            "scope": scope,
             "description": model.description,
             "worker": model.worker,
             "status": model.status,
@@ -3168,7 +3157,7 @@ def create_dl_model_application(
     if errors:
         raise ValueError("\n".join(errors))
     targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
-    scope = infer_dl_scope(targets)
+    scope = ""  # Legacy column retained for existing databases.
     created_issue_ids: list[int] = []
     if create_monitoring_issue:
         created_issue_ids = create_dl_issues_for_targets(
@@ -3197,8 +3186,7 @@ def create_dl_model_application(
                 "polarity": DL_MACHINE_BY_KEY[target_key]["polarity"],
                 "instrument": DL_MACHINE_BY_KEY[target_key]["instrument"],
                 "machine": target_key,
-                "scope": scope,
-                "description": model.description,
+                    "description": model.description,
                 "worker": model.worker,
                 "created_issue_id": created_issue_ids[0] if created_issue_ids else "",
             }
@@ -3263,83 +3251,4 @@ def mark_dl_trained_model_status(
 
 
 def export_deep_learning_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH) -> None:
-    if not _online_enabled(db_path):
-        return _LOCAL_EXPORT_DEEP_LEARNING_DASHBOARD_TO_EXCEL(output_path, db_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    latest = latest_dl_applied_models(db_path=db_path)
-    trained_rows = list_dl_trained_models(db_path=db_path)
-    workbook = Workbook()
-    applied_sheet = workbook.active
-    applied_sheet.title = "Applied Models"
-    trained_sheet = workbook.create_sheet("Trained Models")
-    applied_headers = [
-        "Model Family",
-        "Line",
-        "Polarity",
-        "Instrument",
-        "Model Version",
-        "Scope",
-        "Time",
-        "Logged By",
-        "Description",
-    ]
-    trained_headers = [
-        "Status",
-        "Model Family",
-        "Model Version",
-        "Change Type",
-        "Scope",
-        "Target Machines",
-        "Time",
-        "Logged By",
-        "Description",
-    ]
-    applied_sheet.append(applied_headers)
-    trained_sheet.append(trained_headers)
-    for family in DL_MODEL_FAMILIES:
-        for target in DL_MACHINE_TARGETS:
-            row = latest.get((family, target["line"], target["instrument"]))
-            applied_sheet.append(
-                [
-                    family,
-                    target["line"],
-                    target["polarity"],
-                    target["instrument"],
-                    row["model_version"] if row else "",
-                    row["scope"] if row else "",
-                    row["applied_time"] if row else "",
-                    row["worker"] if row else "",
-                    row["description"] if row else "",
-                ]
-            )
-    for row in trained_rows:
-        trained_sheet.append(
-            [
-                row["status"],
-                row["model_family"],
-                row["model_version"],
-                row["change_type"],
-                row["scope"],
-                row["target_machines"],
-                row["trained_time"],
-                row["worker"],
-                row["description"],
-            ]
-        )
-    for sheet in [applied_sheet, trained_sheet]:
-        for cell in sheet[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="1F4E78")
-            cell.alignment = Alignment(vertical="top")
-        for column_index, header in enumerate([cell.value for cell in sheet[1]], start=1):
-            column_letter = get_column_letter(column_index)
-            max_length = len(str(header or ""))
-            for cell in sheet[column_letter]:
-                max_length = max(max_length, len(str(cell.value or "")))
-                cell.alignment = Alignment(wrap_text=header == "Description", vertical="top")
-            if header == "Description":
-                sheet.column_dimensions[column_letter].width = 55
-            else:
-                sheet.column_dimensions[column_letter].width = min(max_length + 2, 28)
-        sheet.freeze_panes = "A2"
-    workbook.save(output_path)
+    return _LOCAL_EXPORT_DEEP_LEARNING_DASHBOARD_TO_EXCEL(output_path, db_path)

@@ -177,7 +177,6 @@ TRANSLATIONS = {
         "Create Action Issue": "조치 필요 이슈 등록",
         "Save Trained Model": "학습 모델 저장",
         "Save Applied Model": "적용 모델 저장",
-        "Scope": "범위",
         "Polarity": "극성",
         "Time": "시간",
     }
@@ -347,7 +346,6 @@ class VisionIssueApp(tk.Tk):
                 "time": "Time",
                 "version": "Model Version",
                 "change_type": "Change Type",
-                "scope": "Scope",
                 "targets": "Target Machines",
             }
             for column, key in headings.items():
@@ -1789,7 +1787,7 @@ class VisionIssueApp(tk.Tk):
         self.tr_label(queue_panel, "Trained Models", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.dl_trained_tree = ttk.Treeview(
             queue_panel,
-            columns=("time", "version", "change_type", "scope", "targets"),
+            columns=("time", "version", "change_type", "targets"),
             show="headings",
             selectmode="browse",
             height=7,
@@ -1798,10 +1796,9 @@ class VisionIssueApp(tk.Tk):
             "time": "Time",
             "version": "Model Version",
             "change_type": "Change Type",
-            "scope": "Scope",
             "targets": "Target Machines",
         }
-        trained_widths = {"time": 112, "version": 120, "change_type": 140, "scope": 100, "targets": 220}
+        trained_widths = {"time": 112, "version": 120, "change_type": 140, "targets": 220}
         for column in trained_headings:
             self.dl_trained_tree.heading(column, text=self.text(trained_headings[column]))
             self.dl_trained_tree.column(column, width=trained_widths[column], minwidth=80, stretch=False, anchor="w")
@@ -1838,14 +1835,11 @@ class VisionIssueApp(tk.Tk):
         version_label.pack(fill="x")
         time_label = tk.Label(cell, text="", bg="#ffffff", fg="#4b5563", font=("Segoe UI", 8), anchor="w")
         time_label.pack(fill="x", pady=(1, 0))
-        scope_label = tk.Label(cell, text="", bg="#ffffff", fg="#2563eb", font=("Segoe UI", 8), anchor="w")
-        scope_label.pack(fill="x", pady=(1, 0))
         widgets: dict[str, tk.Widget] = {
             "shell": shell,
             "cell": cell,
             "version_label": version_label,
             "time_label": time_label,
-            "scope_label": scope_label,
         }
         for widget in widgets.values():
             widget.bind("<Button-1>", lambda _event, target=f"{line} {instrument}": self.toggle_dl_apply_target(target))
@@ -2056,12 +2050,10 @@ class VisionIssueApp(tk.Tk):
                 widgets["cell"].configure(bg="#ffffff")
                 widgets["version_label"].configure(text="-", bg="#ffffff", fg="#6b7280")
                 widgets["time_label"].configure(text="", bg="#ffffff")
-                widgets["scope_label"].configure(text="", bg="#ffffff")
                 continue
             widgets["cell"].configure(bg="#ffffff")
             widgets["version_label"].configure(text=row["model_version"], bg="#ffffff", fg="#111827")
             widgets["time_label"].configure(text=row["applied_time"], bg="#ffffff")
-            widgets["scope_label"].configure(text=row["scope"], bg="#ffffff")
 
     def populate_dl_trained_queue(self) -> None:
         family = self.dl_model_family_var.get()
@@ -2080,7 +2072,6 @@ class VisionIssueApp(tk.Tk):
                     row["trained_time"],
                     row["model_version"],
                     row["change_type"],
-                    row["scope"],
                     row["target_machines"],
                 ),
             )

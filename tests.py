@@ -327,7 +327,7 @@ def run_tests() -> None:
         trained_rows = list_dl_trained_models("SEPA", "Action Required", db_path)
         assert len(trained_rows) == 1
         assert trained_rows[0]["id"] == trained_id
-        assert trained_rows[0]["scope"] == "Line-specific"
+        assert trained_rows[0]["scope"] == ""
         dl_action_issues = search_issues({"category": "Deep Learning", "subcategory": "Model Update"}, db_path)
         assert len(dl_action_issues) == 1
         assert dl_action_issues[0]["status"] == "Action Required"
@@ -362,13 +362,22 @@ def run_tests() -> None:
         assert dl_workbook.sheetnames == ["Applied Models", "Trained Models"]
         applied_sheet = dl_workbook["Applied Models"]
         trained_sheet = dl_workbook["Trained Models"]
-        assert applied_sheet.max_row == 1 + 10 * 8
+        assert applied_sheet.max_row == 12
+        assert applied_sheet.max_column == 9
         assert trained_sheet.max_row == 2
-        applied_rows = list(applied_sheet.iter_rows(min_row=2, values_only=True))
-        sepa_minus = [row for row in applied_rows if row[0] == "SEPA" and row[1] == "1-1" and row[3] == "Welding(-)"][0]
-        assert sepa_minus[4] == "SEPA-2026-06-A"
-        assert applied_sheet["I2"].alignment.wrap_text is True
-        assert trained_sheet["I2"].alignment.wrap_text is True
+        assert applied_sheet["A11"].value == "SEPA"
+        assert applied_sheet["B11"].value == "SEPA-2026-06-A"
+        assert applied_sheet["C11"].value == "SEPA-2026-06-A"
+        assert applied_sheet["D11"].value is None
+        assert applied_sheet["A10"].value == "BEAD"
+        assert applied_sheet["B1"].value == "1-1"
+        assert applied_sheet["B2"].value == "ANODE"
+        assert applied_sheet["C2"].value == "CATHODE"
+        assert "B1:C1" in {str(r) for r in applied_sheet.merged_cells.ranges}
+        assert trained_sheet.max_column == 8
+        assert trained_sheet["H2"].alignment.wrap_text is True
+        assert not any(cell.value == "Scope" for sheet in dl_workbook for row in sheet for cell in row)
+        assert all("Scope:" not in row["description"] for row in dl_issues)
 
         create_version_update(
             VersionInput(
