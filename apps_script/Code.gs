@@ -1,6 +1,6 @@
 const SPREADSHEET_ID = 'PASTE_GOOGLE_SHEET_ID_HERE';
 const API_TOKEN = 'PASTE_SHARED_API_TOKEN_HERE';
-const SCHEMA_VERSION = 'online_1_1';
+const SCHEMA_VERSION = 'online_1_2';
 
 const ACTIVE_STATUSES = ['Action Required', 'Monitoring'];
 const TABLES = {
@@ -17,6 +17,16 @@ const TABLES = {
     'id', 'created_at', 'update_time', 'group_name', 'line', 'instrument', 'sw_version',
     'algo_version', 'description', 'sw_description', 'algo_description', 'sw_touched',
     'algo_touched', 'worker', 'created_issue_id', 'updated_at', 'deleted_at', 'client_request_id'
+  ],
+  dl_trained_models: [
+    'id', 'created_at', 'trained_time', 'model_family', 'model_version', 'change_type',
+    'target_machines', 'scope', 'description', 'worker', 'status', 'created_issue_id',
+    'updated_at', 'deleted_at', 'client_request_id'
+  ],
+  dl_model_applications: [
+    'id', 'created_at', 'applied_time', 'model_family', 'model_version', 'change_type',
+    'line', 'polarity', 'instrument', 'machine', 'scope', 'description', 'worker',
+    'created_issue_id', 'updated_at', 'deleted_at', 'client_request_id'
   ]
 };
 
@@ -180,7 +190,9 @@ function bootstrap_() {
     tables: {
       issues: listRows_('issues'),
       version_templates: listRows_('version_templates'),
-      version_history: listRows_('version_history')
+      version_history: listRows_('version_history'),
+      dl_trained_models: listRows_('dl_trained_models'),
+      dl_model_applications: listRows_('dl_model_applications')
     },
     issue_bounds: issueTimeBounds_()
   };
@@ -194,7 +206,9 @@ function changesSince_(since) {
     tables: {
       issues: changedRowsSince_('issues', since),
       version_templates: changedRowsSince_('version_templates', since),
-      version_history: changedRowsSince_('version_history', since)
+      version_history: changedRowsSince_('version_history', since),
+      dl_trained_models: changedRowsSince_('dl_trained_models', since),
+      dl_model_applications: changedRowsSince_('dl_model_applications', since)
     },
     issue_bounds: issueTimeBounds_()
   };

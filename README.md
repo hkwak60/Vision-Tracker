@@ -26,6 +26,8 @@ Use `config.example.json` and `apps_script/Code.gs` as sanitized templates.
 - Create/Edit issue workflow with multi-line and multi-vision selection
 - Search / Report with Excel export
 - Version History dashboard and SW/Algo version descriptions
+- Deep Learning Model dashboard for trained/applied Welding model tracking
+- Deep Learning dashboard Excel export
 - Korean/English UI selector
 - Online sync status with local cache fallback
 

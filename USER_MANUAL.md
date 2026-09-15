@@ -10,6 +10,7 @@ Vision Issue Tracker는 생산 라인의 Vision Inspection Instrument 이슈를 
 - 조건별 검색 및 Excel 보고서 생성
 - 비전별 SW Version / Algo Version 관리
 - 버전 업데이트 시 Monitoring 이슈 자동 등록
+- Welding 딥러닝 모델 학습/적용 이력 관리
 
 ## 2. 실행 및 배포 파일
 
@@ -90,6 +91,7 @@ Hojun Kwak
 Kijung Kim
 Jihoon Yun
 Jisub Yun
+Seongwon Park
 ```
 
 예시:
@@ -167,7 +169,7 @@ Move to Action Required:
 
 Resolved:
 - 선택한 이슈를 해결 완료 처리합니다.
-- Downtime Duration이 비어 있으면 발생 시간 기준으로 자동 계산됩니다.
+- Downtime Duration은 사용자가 입력한 값을 유지합니다.
 - 처리 후 해당 카드는 Issue Board에서 사라집니다.
 
 Delete:
@@ -815,7 +817,78 @@ New version에서 intermittent grab delay 발생하여 이전 안정 버전으�
 결과:
 - Program Update 관련 이슈만 Excel 파일로 저장됩니다.
 
-## 14. 데이터 백업
+## 14. 딥러닝 모델 탭
+
+`딥러닝 모델` 탭은 Welding(+), Welding(-) 딥러닝 모델의 학습 완료 이력과 실제 적용 이력을 관리합니다.
+
+대상 설비:
+- 1-1 Welding(-), 1-1 Welding(+)
+- 1-2 Welding(-), 1-2 Welding(+)
+- 2-1 Welding(-), 2-1 Welding(+)
+- 2-2 Welding(-), 2-2 Welding(+)
+
+주요 영역:
+- Applied Models: 선택한 모델 종류의 8대 설비별 현재 적용 모델 표시
+- Trained Models: 학습 완료 후 아직 적용 조치가 필요한 모델 목록
+- Register Trained Model: 새로 학습한 모델 등록
+- Apply Model: 실제 설비에 모델 적용 기록
+
+모델 종류는 VisionMaster 기준 목록을 사용합니다.
+
+예시:
+```text
+SEPA
+Crop_A
+SEGMENTATION
+```
+
+### 학습 모델 등록
+
+1. 상단에서 Model Family를 선택합니다.
+2. `Register Trained Model`에서 대상 설비를 선택합니다.
+3. Model Version, Change Type, Trained Time, Logged By, Description을 입력합니다.
+4. `조치 필요 이슈 등록`이 켜져 있으면 Issue Board에 `Deep Learning / Model Update / Action Required` 이슈가 자동 생성됩니다.
+5. `학습 모델 저장`을 누릅니다.
+
+예시:
+- Model Family: `SEPA`
+- Model Version: `SEPA-2026-06-A`
+- Change Type: `Overkill Training`
+- Target Machines: `1-1 Welding(-)`, `1-1 Welding(+)`
+- Description: `Added overkill training images for welding inspection.`
+
+결과:
+- Trained Models 목록에 등록됩니다.
+- 자동 이슈 등록이 켜져 있으면 Action Required 카드가 생성됩니다.
+
+### 모델 적용 기록
+
+1. Trained Models 목록에서 적용할 모델을 클릭하면 Apply Model 입력란이 채워집니다.
+2. 실제 적용 대상 설비와 Applied Time을 확인합니다.
+3. `모니터링 이슈 등록`이 켜져 있으면 Issue Board에 `Deep Learning / Model Update / Monitoring` 이슈가 자동 생성됩니다.
+4. `적용 모델 저장`을 누릅니다.
+
+결과:
+- Applied Models 대시보드에 해당 설비의 현재 모델로 표시됩니다.
+- 선택했던 Trained Model은 Action Required 목록에서 제거되고 Applied 상태로 변경됩니다.
+
+### 대시보드 Excel 추출
+
+우측 상단 `대시보드 추출` 버튼으로 딥러닝 모델 현황을 Excel로 저장할 수 있습니다.
+
+Excel 시트:
+- Applied Models: 전체 모델 종류와 8대 설비의 현재 적용 모델
+- Trained Models: 등록된 학습 모델과 상태
+
+기본 파일명:
+
+```text
+deep_learning_model_dashboard_YYYY-MM-DD_HHMM.xlsx
+```
+
+온라인 모드에서 최신 Google Sheets 데이터를 반영하려면 먼저 `새로고침`을 누른 뒤 추출합니다.
+
+## 15. 데이터 백업
 
 백업해야 할 파일:
 
@@ -837,7 +910,7 @@ vision_issues_2026-06-18.db
 2. 기존 `data\vision_issues.db`를 백업본으로 교체
 3. 프로그램 재실행
 
-## 15. 문제 해결
+## 16. 문제 해결
 
 ### 프로그램은 실행되지만 데이터가 안 보일 때
 
@@ -868,7 +941,7 @@ vision_issues_2026-06-18.db
 복구하려면:
 - 백업해둔 `vision_issues.db` 파일로 복구해야 합니다.
 
-## 16. 운영 주의사항
+## 17. 운영 주의사항
 
 - 삭제 전에는 반드시 확인창 내용을 확인합니다.
 - 버전 삭제는 Version Dashboard 표시에도 영향을 줍니다.

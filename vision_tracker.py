@@ -36,6 +36,14 @@ CATEGORY_MAP = {
     "Hardware": ["Camera", "Lighting"],
     "Software": ["Program Crash", "Program Update", "Mavin Model Update", "UI", "PLC", "Other"],
     "Recipe": ["Overkill", "Underkill", "Add Measure", "Bypass/Unbypass"],
+    "Deep Learning": [
+        "Overkill Training",
+        "Leakage Training",
+        "Overkill&Leakage",
+        "Dataset Major Change",
+        "Model Revert",
+        "Model Update",
+    ],
     "Camera Grab Fail": [""],
     "Production": [""],
     "Other": [""],
@@ -53,6 +61,34 @@ INSTRUMENT_GROUP = {
     for instrument in instruments
 }
 NO_ALGO_INSTRUMENTS = {"Sealing"}
+DL_MODEL_FAMILIES = [
+    "Crop_A",
+    "Crop_B",
+    "Crop_micro",
+    "Crop_micro_tabside",
+    "Gap_DL",
+    "HORNMARK",
+    "LEADEDGE",
+    "SEGMENTATION",
+    "SEPA",
+    "SEPA_SHOULDER",
+]
+DL_CHANGE_TYPES = CATEGORY_MAP["Deep Learning"]
+DL_TRAINED_STATUS_OPTIONS = ["Action Required", "Applied"]
+DL_INSTRUMENTS = ["Welding(-)", "Welding(+)"]
+DL_MACHINE_SEPARATOR = " / "
+DL_MACHINE_TARGETS = [
+    {
+        "key": f"{line} {instrument}",
+        "line": line,
+        "instrument": instrument,
+        "polarity": "Anode" if instrument == "Welding(-)" else "Cathode",
+    }
+    for line in LINES
+    for instrument in DL_INSTRUMENTS
+]
+DL_MACHINE_KEYS = [target["key"] for target in DL_MACHINE_TARGETS]
+DL_MACHINE_BY_KEY = {target["key"]: target for target in DL_MACHINE_TARGETS}
 
 
 def instrument_uses_algo(instrument: str) -> bool:
@@ -129,6 +165,36 @@ def format_instruments(values: list[str] | tuple[str, ...] | set[str]) -> str:
     return INSTRUMENT_SEPARATOR.join(ordered)
 
 
+def split_dl_targets(value: str) -> list[str]:
+    return [item.strip() for item in value.split(DL_MACHINE_SEPARATOR) if item.strip()]
+
+
+def serialize_dl_targets(values: list[str] | tuple[str, ...] | set[str]) -> str:
+    ordered = [target for target in DL_MACHINE_KEYS if target in values]
+    return DL_MACHINE_SEPARATOR.join(ordered)
+
+
+def dl_targets_by_line(values: list[str] | tuple[str, ...] | set[str]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for key in [target for target in DL_MACHINE_KEYS if target in values]:
+        target = DL_MACHINE_BY_KEY[key]
+        grouped.setdefault(target["line"], []).append(target["instrument"])
+    return grouped
+
+
+def infer_dl_scope(values: list[str] | tuple[str, ...] | set[str]) -> str:
+    selected = {target for target in values if target in DL_MACHINE_BY_KEY}
+    if selected == set(DL_MACHINE_KEYS):
+        return "Universal"
+    lines = {DL_MACHINE_BY_KEY[target]["line"] for target in selected}
+    instruments = {DL_MACHINE_BY_KEY[target]["instrument"] for target in selected}
+    if len(lines) == 1 and instruments == set(DL_INSTRUMENTS):
+        return "Line-specific"
+    if len(instruments) == 1 and len(lines) > 1:
+        return "Polarity-specific"
+    return "Custom"
+
+
 @dataclass(frozen=True)
 class IssueInput:
     issue_time: str
@@ -156,6 +222,29 @@ class VersionInput:
     worker: str
     sw_description: str = ""
     algo_description: str = ""
+
+
+@dataclass(frozen=True)
+class DeepLearningTrainedInput:
+    trained_time: str
+    model_family: str
+    model_version: str
+    change_type: str
+    target_machines: tuple[str, ...]
+    worker: str
+    description: str
+    status: str = ACTIVE_STATUS_OPTIONS[0]
+
+
+@dataclass(frozen=True)
+class DeepLearningApplicationInput:
+    applied_time: str
+    model_family: str
+    model_version: str
+    change_type: str
+    target_machines: tuple[str, ...]
+    worker: str
+    description: str
 
 
 def now_text() -> str:
@@ -296,6 +385,58 @@ def initialize_database(db_path: Path = DB_PATH) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_version_history_lookup
             ON version_history(line, instrument, group_name, update_time)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dl_trained_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                trained_time TEXT NOT NULL,
+                model_family TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                target_machines TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                description TEXT,
+                worker TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_issue_id INTEGER,
+                FOREIGN KEY(created_issue_id) REFERENCES issues(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_dl_trained_models_lookup
+            ON dl_trained_models(status, model_family, trained_time)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dl_model_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                applied_time TEXT NOT NULL,
+                model_family TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                line TEXT NOT NULL,
+                polarity TEXT NOT NULL,
+                instrument TEXT NOT NULL,
+                machine TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                description TEXT,
+                worker TEXT NOT NULL,
+                created_issue_id INTEGER,
+                FOREIGN KEY(created_issue_id) REFERENCES issues(id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_dl_model_applications_lookup
+            ON dl_model_applications(model_family, line, instrument, applied_time)
             """
         )
         ensure_column(conn, "version_templates", "sw_description", "TEXT")
@@ -1312,6 +1453,417 @@ def create_version_update(
         return int(cursor.lastrowid)
 
 
+def validate_dl_targets(target_machines: tuple[str, ...]) -> list[str]:
+    requested = [target.strip() for target in target_machines if target.strip()]
+    if not requested:
+        return ["Select at least one Welding machine."]
+    invalid = [target for target in requested if target not in DL_MACHINE_BY_KEY]
+    if invalid:
+        return ["Welding machine selection is not valid."]
+    return []
+
+
+def validate_dl_trained_model(model: DeepLearningTrainedInput) -> list[str]:
+    errors: list[str] = []
+    required = {
+        "Trained time": model.trained_time,
+        "Model family": model.model_family,
+        "Model version": model.model_version,
+        "Change type": model.change_type,
+        "Worker": model.worker,
+    }
+    for label, value in required.items():
+        if not value.strip():
+            errors.append(f"{label} is required.")
+    try:
+        datetime.strptime(model.trained_time, "%Y-%m-%d %H:%M")
+    except ValueError:
+        errors.append("Trained time must use YYYY-MM-DD HH:MM format.")
+    if model.model_family not in DL_MODEL_FAMILIES:
+        errors.append("Model family is not valid.")
+    if model.change_type not in DL_CHANGE_TYPES:
+        errors.append("Deep Learning change type is not valid.")
+    if model.status not in DL_TRAINED_STATUS_OPTIONS:
+        errors.append("Trained model status is not valid.")
+    errors.extend(validate_dl_targets(model.target_machines))
+    return errors
+
+
+def validate_dl_application(model: DeepLearningApplicationInput) -> list[str]:
+    errors: list[str] = []
+    required = {
+        "Applied time": model.applied_time,
+        "Model family": model.model_family,
+        "Model version": model.model_version,
+        "Change type": model.change_type,
+        "Worker": model.worker,
+    }
+    for label, value in required.items():
+        if not value.strip():
+            errors.append(f"{label} is required.")
+    try:
+        datetime.strptime(model.applied_time, "%Y-%m-%d %H:%M")
+    except ValueError:
+        errors.append("Applied time must use YYYY-MM-DD HH:MM format.")
+    if model.model_family not in DL_MODEL_FAMILIES:
+        errors.append("Model family is not valid.")
+    if model.change_type not in DL_CHANGE_TYPES:
+        errors.append("Deep Learning change type is not valid.")
+    errors.extend(validate_dl_targets(model.target_machines))
+    return errors
+
+
+def dl_issue_description(
+    model_family: str,
+    model_version: str,
+    change_type: str,
+    scope: str,
+    target_machines: str,
+    description: str,
+) -> str:
+    lines = [
+        f"Model Family: {model_family}",
+        f"Model Version: {model_version}",
+        f"Change Type: {change_type}",
+        f"Scope: {scope}",
+        f"Targets: {target_machines}",
+    ]
+    if description.strip():
+        lines.extend(["", description.strip()])
+    return "\n".join(lines)
+
+
+def create_dl_issues_for_targets(
+    issue_time: str,
+    model_family: str,
+    model_version: str,
+    change_type: str,
+    target_machines: tuple[str, ...],
+    scope: str,
+    description: str,
+    worker: str,
+    status: str,
+    title_prefix: str,
+    db_path: Path = DB_PATH,
+) -> list[int]:
+    target_text = serialize_dl_targets(target_machines)
+    issue_description = dl_issue_description(
+        model_family,
+        model_version,
+        change_type,
+        scope,
+        target_text,
+        description,
+    )
+    issue_ids: list[int] = []
+    for line, instruments in dl_targets_by_line(target_machines).items():
+        instrument_text = format_instruments(instruments)
+        issue_ids.append(
+            create_issue(
+                IssueInput(
+                    issue_time=issue_time,
+                    resolved_time="00:00",
+                    line=line,
+                    instrument=instrument_text,
+                    worker=worker,
+                    category="Deep Learning",
+                    subcategory="Model Update",
+                    title=f"{title_prefix} - {line} {instrument_text} {model_family} {model_version}",
+                    description=issue_description,
+                    status=status,
+                ),
+                db_path,
+            )
+        )
+    return issue_ids
+
+
+def create_dl_trained_model(
+    model: DeepLearningTrainedInput,
+    create_action_issue: bool = True,
+    db_path: Path = DB_PATH,
+) -> int:
+    errors = validate_dl_trained_model(model)
+    if errors:
+        raise ValueError("\n".join(errors))
+    targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
+    target_text = serialize_dl_targets(targets)
+    scope = infer_dl_scope(targets)
+    created_issue_id = 0
+    if create_action_issue:
+        issue_ids = create_dl_issues_for_targets(
+            model.trained_time,
+            model.model_family,
+            model.model_version,
+            model.change_type,
+            targets,
+            scope,
+            model.description,
+            model.worker,
+            "Action Required",
+            "Deep Learning Model Ready",
+            db_path,
+        )
+        created_issue_id = issue_ids[0] if issue_ids else 0
+    with closing(connect(db_path)) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO dl_trained_models (
+                created_at, trained_time, model_family, model_version, change_type,
+                target_machines, scope, description, worker, status, created_issue_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now_text(),
+                model.trained_time,
+                model.model_family,
+                model.model_version,
+                model.change_type,
+                target_text,
+                scope,
+                model.description,
+                model.worker,
+                model.status,
+                created_issue_id or None,
+            ),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def create_dl_model_application(
+    model: DeepLearningApplicationInput,
+    create_monitoring_issue: bool = True,
+    trained_model_id: int | None = None,
+    db_path: Path = DB_PATH,
+) -> list[int]:
+    errors = validate_dl_application(model)
+    if errors:
+        raise ValueError("\n".join(errors))
+    targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
+    scope = infer_dl_scope(targets)
+    created_issue_ids: list[int] = []
+    if create_monitoring_issue:
+        created_issue_ids = create_dl_issues_for_targets(
+            model.applied_time,
+            model.model_family,
+            model.model_version,
+            model.change_type,
+            targets,
+            scope,
+            model.description,
+            model.worker,
+            "Monitoring",
+            "Deep Learning Model Applied",
+            db_path,
+        )
+    rows: list[int] = []
+    with closing(connect(db_path)) as conn:
+        for target_key in targets:
+            target = DL_MACHINE_BY_KEY[target_key]
+            cursor = conn.execute(
+                """
+                INSERT INTO dl_model_applications (
+                    created_at, applied_time, model_family, model_version, change_type,
+                    line, polarity, instrument, machine, scope, description, worker, created_issue_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    now_text(),
+                    model.applied_time,
+                    model.model_family,
+                    model.model_version,
+                    model.change_type,
+                    target["line"],
+                    target["polarity"],
+                    target["instrument"],
+                    target_key,
+                    scope,
+                    model.description,
+                    model.worker,
+                    created_issue_ids[0] if created_issue_ids else None,
+                ),
+            )
+            rows.append(int(cursor.lastrowid))
+        if trained_model_id:
+            conn.execute(
+                "UPDATE dl_trained_models SET status = 'Applied' WHERE id = ?",
+                (trained_model_id,),
+            )
+        conn.commit()
+    return rows
+
+
+def list_dl_trained_models(
+    model_family: str | None = None,
+    status: str | None = None,
+    db_path: Path = DB_PATH,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if model_family:
+        clauses.append("model_family = ?")
+        params.append(model_family)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with closing(connect(db_path)) as conn:
+        return list(
+            conn.execute(
+                f"""
+                SELECT id, created_at, trained_time, model_family, model_version,
+                       change_type, target_machines, scope, description, worker,
+                       status, created_issue_id
+                FROM dl_trained_models
+                {where}
+                ORDER BY trained_time DESC, id DESC
+                """,
+                params,
+            )
+        )
+
+
+def dl_application_rows(model_family: str | None = None, db_path: Path = DB_PATH) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if model_family:
+        clauses.append("model_family = ?")
+        params.append(model_family)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with closing(connect(db_path)) as conn:
+        return list(
+            conn.execute(
+                f"""
+                SELECT id, created_at, applied_time, model_family, model_version,
+                       change_type, line, polarity, instrument, machine, scope,
+                       description, worker, created_issue_id
+                FROM dl_model_applications
+                {where}
+                ORDER BY applied_time DESC, id DESC
+                """,
+                params,
+            )
+        )
+
+
+def latest_dl_applied_models(
+    model_family: str | None = None,
+    db_path: Path = DB_PATH,
+) -> dict[tuple[str, str, str], sqlite3.Row]:
+    latest: dict[tuple[str, str, str], sqlite3.Row] = {}
+    rows = sorted(
+        dl_application_rows(model_family, db_path),
+        key=lambda row: (row["applied_time"], int(row["id"])),
+    )
+    for row in rows:
+        latest[(row["model_family"], row["line"], row["instrument"])] = row
+    return latest
+
+
+def mark_dl_trained_model_status(
+    trained_model_id: int,
+    status: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    if status not in DL_TRAINED_STATUS_OPTIONS:
+        raise ValueError("Trained model status is not valid.")
+    with closing(connect(db_path)) as conn:
+        conn.execute(
+            "UPDATE dl_trained_models SET status = ? WHERE id = ?",
+            (status, trained_model_id),
+        )
+        conn.commit()
+
+
+def export_deep_learning_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    latest = latest_dl_applied_models(db_path=db_path)
+    trained_rows = list_dl_trained_models(db_path=db_path)
+    workbook = Workbook()
+    applied_sheet = workbook.active
+    applied_sheet.title = "Applied Models"
+    trained_sheet = workbook.create_sheet("Trained Models")
+
+    applied_headers = [
+        "Model Family",
+        "Line",
+        "Polarity",
+        "Instrument",
+        "Model Version",
+        "Scope",
+        "Time",
+        "Logged By",
+        "Description",
+    ]
+    trained_headers = [
+        "Status",
+        "Model Family",
+        "Model Version",
+        "Change Type",
+        "Scope",
+        "Target Machines",
+        "Time",
+        "Logged By",
+        "Description",
+    ]
+    applied_sheet.append(applied_headers)
+    trained_sheet.append(trained_headers)
+
+    for family in DL_MODEL_FAMILIES:
+        for target in DL_MACHINE_TARGETS:
+            row = latest.get((family, target["line"], target["instrument"]))
+            applied_sheet.append(
+                [
+                    family,
+                    target["line"],
+                    target["polarity"],
+                    target["instrument"],
+                    row["model_version"] if row else "",
+                    row["scope"] if row else "",
+                    row["applied_time"] if row else "",
+                    row["worker"] if row else "",
+                    row["description"] if row else "",
+                ]
+            )
+
+    for row in trained_rows:
+        trained_sheet.append(
+            [
+                row["status"],
+                row["model_family"],
+                row["model_version"],
+                row["change_type"],
+                row["scope"],
+                row["target_machines"],
+                row["trained_time"],
+                row["worker"],
+                row["description"],
+            ]
+        )
+
+    for sheet in [applied_sheet, trained_sheet]:
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.alignment = Alignment(vertical="top")
+        for column_index, header in enumerate([cell.value for cell in sheet[1]], start=1):
+            column_letter = get_column_letter(column_index)
+            max_length = len(str(header or ""))
+            for cell in sheet[column_letter]:
+                max_length = max(max_length, len(str(cell.value or "")))
+                cell.alignment = Alignment(wrap_text=header == "Description", vertical="top")
+            if header == "Description":
+                sheet.column_dimensions[column_letter].width = 55
+            else:
+                sheet.column_dimensions[column_letter].width = min(max_length + 2, 28)
+        sheet.freeze_panes = "A2"
+
+    workbook.save(output_path)
+
+
 def build_search_query(filters: dict[str, str]) -> tuple[str, list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
@@ -1544,6 +2096,13 @@ _LOCAL_LATEST_VERSION_BY_INSTRUMENT = latest_version_by_instrument
 _LOCAL_LATEST_DASHBOARD_VERSIONS = latest_dashboard_versions
 _LOCAL_VERSION_HISTORY_ROWS = version_history_rows
 _LOCAL_CREATE_VERSION_UPDATE = create_version_update
+_LOCAL_CREATE_DL_TRAINED_MODEL = create_dl_trained_model
+_LOCAL_CREATE_DL_MODEL_APPLICATION = create_dl_model_application
+_LOCAL_LIST_DL_TRAINED_MODELS = list_dl_trained_models
+_LOCAL_DL_APPLICATION_ROWS = dl_application_rows
+_LOCAL_LATEST_DL_APPLIED_MODELS = latest_dl_applied_models
+_LOCAL_MARK_DL_TRAINED_MODEL_STATUS = mark_dl_trained_model_status
+_LOCAL_EXPORT_DEEP_LEARNING_DASHBOARD_TO_EXCEL = export_deep_learning_dashboard_to_excel
 
 _ISSUE_HEADERS = [
     "id", "created_at", "issue_time", "resolved_time", "line", "instrument", "worker",
@@ -1557,6 +2116,15 @@ _HISTORY_HEADERS = [
     "id", "created_at", "update_time", "group_name", "line", "instrument", "sw_version",
     "algo_version", "description", "sw_description", "algo_description", "sw_touched",
     "algo_touched", "worker", "created_issue_id",
+]
+_DL_TRAINED_HEADERS = [
+    "id", "created_at", "trained_time", "model_family", "model_version", "change_type",
+    "target_machines", "scope", "description", "worker", "status", "created_issue_id",
+]
+_DL_APPLICATION_HEADERS = [
+    "id", "created_at", "applied_time", "model_family", "model_version", "change_type",
+    "line", "polarity", "instrument", "machine", "scope", "description", "worker",
+    "created_issue_id",
 ]
 _NUMERIC_FIELDS = {"id", "created_issue_id", "sw_touched", "algo_touched"}
 
@@ -1629,6 +2197,8 @@ def _normalize_online_row(table: str, row: dict[str, Any] | None) -> dict[str, A
         "issues": _ISSUE_HEADERS,
         "version_templates": _TEMPLATE_HEADERS,
         "version_history": _HISTORY_HEADERS,
+        "dl_trained_models": _DL_TRAINED_HEADERS,
+        "dl_model_applications": _DL_APPLICATION_HEADERS,
     }[table]
     normalized: dict[str, Any] = {}
     for header in headers:
@@ -2211,7 +2781,7 @@ def _online_cache_path() -> Path:
 
 
 _ONLINE_CACHE_PATH = _online_cache_path()
-_ONLINE_SCHEMA_VERSION = "online_1_1"
+_ONLINE_SCHEMA_VERSION = "online_1_2"
 
 for _header in ["updated_at", "deleted_at", "client_request_id"]:
     if _header not in _ISSUE_HEADERS:
@@ -2222,11 +2792,19 @@ for _header in ["deleted_at", "client_request_id"]:
 for _header in ["updated_at", "deleted_at", "client_request_id"]:
     if _header not in _HISTORY_HEADERS:
         _HISTORY_HEADERS.append(_header)
+for _header in ["updated_at", "deleted_at", "client_request_id"]:
+    if _header not in _DL_TRAINED_HEADERS:
+        _DL_TRAINED_HEADERS.append(_header)
+for _header in ["updated_at", "deleted_at", "client_request_id"]:
+    if _header not in _DL_APPLICATION_HEADERS:
+        _DL_APPLICATION_HEADERS.append(_header)
 
 _TABLE_HEADERS = {
     "issues": _ISSUE_HEADERS,
     "version_templates": _TEMPLATE_HEADERS,
     "version_history": _HISTORY_HEADERS,
+    "dl_trained_models": _DL_TRAINED_HEADERS,
+    "dl_model_applications": _DL_APPLICATION_HEADERS,
 }
 
 
@@ -2412,7 +2990,12 @@ def _apply_sync_result(result: dict[str, Any], replace: bool) -> None:
 
 def _online_legacy_full_refresh() -> None:
     for table in _TABLE_HEADERS:
-        rows = _normalize_row_list(table, _online_request("list", table=table).get("rows", []))
+        try:
+            rows = _normalize_row_list(table, _online_request("list", table=table).get("rows", []))
+        except ValueError as exc:
+            if "Invalid table" in str(exc):
+                continue
+            raise
         _online_cache_replace_rows(table, rows)
     timestamp = now_text()
     _online_cache_set_state("last_sync_at", timestamp)
@@ -2519,3 +3102,239 @@ def search_issues(filters: dict[str, str] | None = None, db_path: Path = DB_PATH
             return []
     return _sorted_issues([row for row in rows if _issue_matches_filters(row, filters)])
 
+
+def create_dl_trained_model(
+    model: DeepLearningTrainedInput,
+    create_action_issue: bool = True,
+    db_path: Path = DB_PATH,
+) -> int:
+    if not _online_enabled(db_path):
+        return _LOCAL_CREATE_DL_TRAINED_MODEL(model, create_action_issue, db_path)
+    errors = validate_dl_trained_model(model)
+    if errors:
+        raise ValueError("\n".join(errors))
+    targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
+    target_text = serialize_dl_targets(targets)
+    scope = infer_dl_scope(targets)
+    created_issue_id = 0
+    if create_action_issue:
+        issue_ids = create_dl_issues_for_targets(
+            model.trained_time,
+            model.model_family,
+            model.model_version,
+            model.change_type,
+            targets,
+            scope,
+            model.description,
+            model.worker,
+            "Action Required",
+            "Deep Learning Model Ready",
+            db_path,
+        )
+        created_issue_id = issue_ids[0] if issue_ids else 0
+    created = _online_append(
+        "dl_trained_models",
+        {
+            "created_at": now_text(),
+            "trained_time": model.trained_time,
+            "model_family": model.model_family,
+            "model_version": model.model_version,
+            "change_type": model.change_type,
+            "target_machines": target_text,
+            "scope": scope,
+            "description": model.description,
+            "worker": model.worker,
+            "status": model.status,
+            "created_issue_id": created_issue_id or "",
+        },
+    )
+    return int(created["id"])
+
+
+def create_dl_model_application(
+    model: DeepLearningApplicationInput,
+    create_monitoring_issue: bool = True,
+    trained_model_id: int | None = None,
+    db_path: Path = DB_PATH,
+) -> list[int]:
+    if not _online_enabled(db_path):
+        return _LOCAL_CREATE_DL_MODEL_APPLICATION(model, create_monitoring_issue, trained_model_id, db_path)
+    errors = validate_dl_application(model)
+    if errors:
+        raise ValueError("\n".join(errors))
+    targets = tuple(target for target in DL_MACHINE_KEYS if target in set(model.target_machines))
+    scope = infer_dl_scope(targets)
+    created_issue_ids: list[int] = []
+    if create_monitoring_issue:
+        created_issue_ids = create_dl_issues_for_targets(
+            model.applied_time,
+            model.model_family,
+            model.model_version,
+            model.change_type,
+            targets,
+            scope,
+            model.description,
+            model.worker,
+            "Monitoring",
+            "Deep Learning Model Applied",
+            db_path,
+        )
+    created_rows = _online_bulk_append(
+        "dl_model_applications",
+        [
+            {
+                "created_at": now_text(),
+                "applied_time": model.applied_time,
+                "model_family": model.model_family,
+                "model_version": model.model_version,
+                "change_type": model.change_type,
+                "line": DL_MACHINE_BY_KEY[target_key]["line"],
+                "polarity": DL_MACHINE_BY_KEY[target_key]["polarity"],
+                "instrument": DL_MACHINE_BY_KEY[target_key]["instrument"],
+                "machine": target_key,
+                "scope": scope,
+                "description": model.description,
+                "worker": model.worker,
+                "created_issue_id": created_issue_ids[0] if created_issue_ids else "",
+            }
+            for target_key in targets
+        ],
+    )
+    if trained_model_id:
+        mark_dl_trained_model_status(trained_model_id, "Applied", db_path)
+    return [int(row["id"]) for row in created_rows]
+
+
+def list_dl_trained_models(
+    model_family: str | None = None,
+    status: str | None = None,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_LIST_DL_TRAINED_MODELS(model_family, status, db_path)
+    rows = _online_rows("dl_trained_models")
+    if model_family:
+        rows = [row for row in rows if row.get("model_family") == model_family]
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return sorted(rows, key=lambda row: (row.get("trained_time", ""), int(row.get("id", 0))), reverse=True)
+
+
+def dl_application_rows(model_family: str | None = None, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_DL_APPLICATION_ROWS(model_family, db_path)
+    rows = _online_rows("dl_model_applications")
+    if model_family:
+        rows = [row for row in rows if row.get("model_family") == model_family]
+    return sorted(rows, key=lambda row: (row.get("applied_time", ""), int(row.get("id", 0))), reverse=True)
+
+
+def latest_dl_applied_models(
+    model_family: str | None = None,
+    db_path: Path = DB_PATH,
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    if not _online_enabled(db_path):
+        return _LOCAL_LATEST_DL_APPLIED_MODELS(model_family, db_path)
+    latest: dict[tuple[str, str, str], dict[str, Any]] = {}
+    rows = sorted(
+        dl_application_rows(model_family, db_path),
+        key=lambda row: (row.get("applied_time", ""), int(row.get("id", 0))),
+    )
+    for row in rows:
+        latest[(row["model_family"], row["line"], row["instrument"])] = row
+    return latest
+
+
+def mark_dl_trained_model_status(
+    trained_model_id: int,
+    status: str,
+    db_path: Path = DB_PATH,
+) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_MARK_DL_TRAINED_MODEL_STATUS(trained_model_id, status, db_path)
+    if status not in DL_TRAINED_STATUS_OPTIONS:
+        raise ValueError("Trained model status is not valid.")
+    _online_update("dl_trained_models", trained_model_id, {"status": status})
+
+
+def export_deep_learning_dashboard_to_excel(output_path: Path, db_path: Path = DB_PATH) -> None:
+    if not _online_enabled(db_path):
+        return _LOCAL_EXPORT_DEEP_LEARNING_DASHBOARD_TO_EXCEL(output_path, db_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    latest = latest_dl_applied_models(db_path=db_path)
+    trained_rows = list_dl_trained_models(db_path=db_path)
+    workbook = Workbook()
+    applied_sheet = workbook.active
+    applied_sheet.title = "Applied Models"
+    trained_sheet = workbook.create_sheet("Trained Models")
+    applied_headers = [
+        "Model Family",
+        "Line",
+        "Polarity",
+        "Instrument",
+        "Model Version",
+        "Scope",
+        "Time",
+        "Logged By",
+        "Description",
+    ]
+    trained_headers = [
+        "Status",
+        "Model Family",
+        "Model Version",
+        "Change Type",
+        "Scope",
+        "Target Machines",
+        "Time",
+        "Logged By",
+        "Description",
+    ]
+    applied_sheet.append(applied_headers)
+    trained_sheet.append(trained_headers)
+    for family in DL_MODEL_FAMILIES:
+        for target in DL_MACHINE_TARGETS:
+            row = latest.get((family, target["line"], target["instrument"]))
+            applied_sheet.append(
+                [
+                    family,
+                    target["line"],
+                    target["polarity"],
+                    target["instrument"],
+                    row["model_version"] if row else "",
+                    row["scope"] if row else "",
+                    row["applied_time"] if row else "",
+                    row["worker"] if row else "",
+                    row["description"] if row else "",
+                ]
+            )
+    for row in trained_rows:
+        trained_sheet.append(
+            [
+                row["status"],
+                row["model_family"],
+                row["model_version"],
+                row["change_type"],
+                row["scope"],
+                row["target_machines"],
+                row["trained_time"],
+                row["worker"],
+                row["description"],
+            ]
+        )
+    for sheet in [applied_sheet, trained_sheet]:
+        for cell in sheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F4E78")
+            cell.alignment = Alignment(vertical="top")
+        for column_index, header in enumerate([cell.value for cell in sheet[1]], start=1):
+            column_letter = get_column_letter(column_index)
+            max_length = len(str(header or ""))
+            for cell in sheet[column_letter]:
+                max_length = max(max_length, len(str(cell.value or "")))
+                cell.alignment = Alignment(wrap_text=header == "Description", vertical="top")
+            if header == "Description":
+                sheet.column_dimensions[column_letter].width = 55
+            else:
+                sheet.column_dimensions[column_letter].width = min(max_length + 2, 28)
+        sheet.freeze_panes = "A2"
+    workbook.save(output_path)

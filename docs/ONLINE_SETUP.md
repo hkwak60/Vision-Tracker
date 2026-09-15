@@ -53,9 +53,10 @@ Do not commit `release_online/config.json` to public GitHub. It contains the sha
 
 The source code should only keep `config.example.json` with placeholders.
 
-## Online 1.1 Performance Notes
+## Online 1.2 Sync Notes
 
 - The EXE now keeps a local per-user cache at `%LOCALAPPDATA%\VisionIssueTracker\online_cache.db` so the window can open from cached data before the network refresh finishes, even when the EXE is run from a USB drive or protected folder.
 - Apps Script now supports `bootstrap`, `changesSince`, `searchIssues`, soft deletes, and `updated_at` / `deleted_at` metadata.
+- The latest schema also creates `dl_trained_models` and `dl_model_applications` sheets for the Deep Learning Model tab.
 - To get the optimized sync path, paste the latest `apps_script/Code.gs` into Apps Script and deploy a new Web App version. If the old Apps Script code is still deployed, the EXE falls back to the slower legacy full refresh.
-- Keep `config.json` next to the EXE. Do not commit `config.json` or `apps_script/Code.gs` to GitHub.
+- Keep `config.json` next to the EXE. Do not commit `config.json` or any real Sheet ID, deployed `/exec` URL, or API token to GitHub.

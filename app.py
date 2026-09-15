@@ -21,6 +21,13 @@ from vision_tracker import (
     APP_TITLE,
     CATEGORIES,
     CATEGORY_MAP,
+    DL_CHANGE_TYPES,
+    DL_INSTRUMENTS,
+    DL_MACHINE_KEYS,
+    DL_MACHINE_TARGETS,
+    DL_MODEL_FAMILIES,
+    DeepLearningApplicationInput,
+    DeepLearningTrainedInput,
     INSTRUMENTS,
     INSTRUMENT_GROUP,
     INSTRUMENT_SEPARATOR,
@@ -31,11 +38,14 @@ from vision_tracker import (
     IssueInput,
     VersionInput,
     active_issues,
+    create_dl_model_application,
+    create_dl_trained_model,
     create_version_update,
     create_issue,
     create_issues_for_lines,
     delete_issue,
     delete_version_component_template,
+    export_deep_learning_dashboard_to_excel,
     export_issues_to_excel,
     export_version_dashboard_to_excel,
     format_instruments,
@@ -43,6 +53,7 @@ from vision_tracker import (
     initialize_database,
     instrument_uses_algo,
     issue_time_bounds,
+    latest_dl_applied_models,
     latest_dashboard_versions,
     latest_version_by_instrument,
     now_text,
@@ -52,12 +63,14 @@ from vision_tracker import (
     save_version_component_template,
     search_issues,
     set_issue_status,
+    split_dl_targets,
     split_instruments,
     update_issue,
     update_version_component_template,
     version_component_templates,
     version_group_uses_algo,
     version_sort_key,
+    list_dl_trained_models,
 )
 
 
@@ -76,6 +89,7 @@ TRANSLATIONS = {
         "Issue Board": "이슈 보드",
         "Search / Report": "검색 / 보고서",
         "Version History": "버전 기록",
+        "Deep Learning Model": "딥러닝 모델",
         "Action Required": "조치 필요",
         "Monitoring": "모니터링",
         "Resolved": "해결됨",
@@ -145,6 +159,25 @@ TRANSLATIONS = {
         "Delete SW": "SW 삭제",
         "Delete Algo": "Algo 삭제",
         "Group": "그룹",
+        "Model Family": "모델 종류",
+        "Model Version": "모델 버전",
+        "Deep Learning Dashboard": "딥러닝 대시보드",
+        "Register Trained Model": "학습 모델 등록",
+        "Apply Model": "모델 적용",
+        "Trained Models": "학습 모델",
+        "Applied Models": "적용 모델",
+        "Change Type": "변경 유형",
+        "Trained Time": "학습 시간",
+        "Applied Time": "적용 시간",
+        "Target Machines": "대상 설비",
+        "Select All": "전체 선택",
+        "Clear Targets": "대상 초기화",
+        "Create Action Issue": "조치 필요 이슈 등록",
+        "Save Trained Model": "학습 모델 저장",
+        "Save Applied Model": "적용 모델 저장",
+        "Scope": "범위",
+        "Polarity": "극성",
+        "Time": "시간",
     }
 }
 
@@ -180,7 +213,7 @@ class VisionIssueApp(tk.Tk):
         if online_mode():
             self.reset_search_date_bounds()
             self.search_records()
-            self.after(200, lambda: self.sync_online_cache_async(force_full=False, refresh_open=True, refresh_search=True, refresh_version=True, reset_bounds=True, quiet=True))
+            self.after(200, lambda: self.sync_online_cache_async(force_full=False, refresh_open=True, refresh_search=True, refresh_version=True, refresh_dl=True, reset_bounds=True, quiet=True))
             self.after(30000, self.periodic_online_sync)
         else:
             self.search_records()
@@ -248,14 +281,17 @@ class VisionIssueApp(tk.Tk):
         self.search_tab = ttk.Frame(self.notebook, padding=14)
         self.version_spacer_tab = ttk.Frame(self.notebook)
         self.version_tab = ttk.Frame(self.notebook, padding=14)
+        self.deep_learning_tab = ttk.Frame(self.notebook, padding=14)
         self.notebook.add(self.open_tab, text="Issue Board")
         self.notebook.add(self.search_tab, text="Search / Report")
         self.notebook.add(self.version_spacer_tab, text=VERSION_TAB_SPACER, state="disabled")
         self.notebook.add(self.version_tab, text="Version History")
+        self.notebook.add(self.deep_learning_tab, text="Deep Learning Model")
 
         self.build_open_tab()
         self.build_search_tab()
         self.build_version_tab()
+        self.build_deep_learning_tab()
         self.apply_language()
 
     def text(self, key: str) -> str:
@@ -294,11 +330,26 @@ class VisionIssueApp(tk.Tk):
             self.notebook.tab(self.search_tab, text=self.text("Search / Report"))
             self.notebook.tab(self.version_spacer_tab, text=VERSION_TAB_SPACER)
             self.notebook.tab(self.version_tab, text=self.text("Version History"))
+            self.notebook.tab(self.deep_learning_tab, text=self.text("Deep Learning Model"))
         for tree_name in ["search_tree"]:
             if hasattr(self, tree_name):
                 self.update_tree_headings(getattr(self, tree_name))
         if hasattr(self, "version_create_issue_button"):
             self.refresh_create_issue_button()
+        if hasattr(self, "dl_register_issue_button"):
+            self.refresh_dl_register_issue_button()
+        if hasattr(self, "dl_apply_issue_button"):
+            self.refresh_dl_apply_issue_button()
+        if hasattr(self, "dl_trained_tree"):
+            headings = {
+                "time": "Time",
+                "version": "Model Version",
+                "change_type": "Change Type",
+                "scope": "Scope",
+                "targets": "Target Machines",
+            }
+            for column, key in headings.items():
+                self.dl_trained_tree.heading(column, text=self.text(key))
         if hasattr(self, "sync_status_var"):
             self.set_sync_status(self.sync_status_state, self.sync_status_detail)
 
@@ -1443,6 +1494,7 @@ class VisionIssueApp(tk.Tk):
         refresh_open: bool = True,
         refresh_search: bool = False,
         refresh_version: bool = False,
+        refresh_dl: bool = False,
         reset_bounds: bool = False,
         quiet: bool = False,
     ) -> None:
@@ -1456,6 +1508,8 @@ class VisionIssueApp(tk.Tk):
                 self.search_records()
             if refresh_version:
                 self.refresh_version_history()
+            if refresh_dl:
+                self.refresh_deep_learning_models()
             return
         if self.online_sync_running:
             return
@@ -1468,7 +1522,7 @@ class VisionIssueApp(tk.Tk):
                 refresh_online_cache(force_full=force_full)
             except Exception as exc:
                 error = exc
-            self.after(0, lambda: self.finish_online_sync(error, refresh_open, refresh_search, refresh_version, reset_bounds, quiet))
+            self.after(0, lambda: self.finish_online_sync(error, refresh_open, refresh_search, refresh_version, refresh_dl, reset_bounds, quiet))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1478,6 +1532,7 @@ class VisionIssueApp(tk.Tk):
         refresh_open: bool,
         refresh_search: bool,
         refresh_version: bool,
+        refresh_dl: bool,
         reset_bounds: bool,
         quiet: bool,
     ) -> None:
@@ -1497,6 +1552,8 @@ class VisionIssueApp(tk.Tk):
             self.search_records(preserve_view=preserve_view)
         if refresh_version:
             self.refresh_version_history()
+        if refresh_dl:
+            self.refresh_deep_learning_models()
 
     def periodic_online_sync(self) -> None:
         if online_mode():
@@ -1514,6 +1571,12 @@ class VisionIssueApp(tk.Tk):
             self.sync_online_cache_async(refresh_open=False, refresh_search=False, refresh_version=True, quiet=False)
         else:
             self.refresh_version_history()
+
+    def refresh_deep_learning_command(self) -> None:
+        if online_mode():
+            self.sync_online_cache_async(refresh_open=True, refresh_search=False, refresh_dl=True, quiet=False)
+        else:
+            self.refresh_deep_learning_models()
 
     def search_records_command(self) -> None:
         if online_mode():
@@ -1590,6 +1653,397 @@ class VisionIssueApp(tk.Tk):
                     algo_label.grid_remove()
                     algo_dot.grid_remove()
                     self.draw_status_dot(algo_dot, None)
+
+    def build_deep_learning_tab(self) -> None:
+        content = ttk.Frame(self.deep_learning_tab)
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=3)
+        content.columnconfigure(1, weight=2)
+        content.rowconfigure(1, weight=2)
+        content.rowconfigure(2, weight=3)
+
+        toolbar = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        self.tr_label(toolbar, "Deep Learning Model", style="Subheader.TLabel").pack(side="left", padx=(0, 12))
+        self.dl_model_family_var = tk.StringVar(value=DL_MODEL_FAMILIES[0])
+        family_combo = ttk.Combobox(
+            toolbar,
+            textvariable=self.dl_model_family_var,
+            values=DL_MODEL_FAMILIES,
+            state="readonly",
+            width=24,
+        )
+        family_combo.pack(side="left")
+        family_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_deep_learning_models())
+        self.tr_button(toolbar, "Export Dashboard", self.export_deep_learning_dashboard, prefix="⇩ ").pack(side="right")
+        self.tr_button(toolbar, "Refresh", self.refresh_deep_learning_command, prefix="↻ ", width=10).pack(side="right", padx=(0, 6))
+
+        dashboard_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        dashboard_panel.grid(row=1, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
+        dashboard_panel.columnconfigure(0, weight=1)
+        self.tr_label(dashboard_panel, "Applied Models", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.dl_dashboard_grid = ttk.Frame(dashboard_panel, style="Panel.TFrame")
+        self.dl_dashboard_grid.grid(row=1, column=0, sticky="nsew")
+        self.dl_dashboard_grid.columnconfigure(1, weight=1)
+        self.dl_dashboard_grid.columnconfigure(2, weight=1)
+        ttk.Label(self.dl_dashboard_grid, text="", style="Panel.TLabel", width=7).grid(row=0, column=0, sticky="nsew")
+        for column_index, instrument in enumerate(DL_INSTRUMENTS, start=1):
+            ttk.Label(
+                self.dl_dashboard_grid,
+                text=instrument,
+                style="Panel.TLabel",
+                anchor="center",
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=0, column=column_index, sticky="ew", padx=2, pady=(0, 4))
+        self.dl_dashboard_cells: dict[tuple[str, str], dict[str, tk.Widget]] = {}
+        for row_index, line in enumerate(LINES, start=1):
+            ttk.Label(
+                self.dl_dashboard_grid,
+                text=line,
+                style="Panel.TLabel",
+                anchor="center",
+                font=("Segoe UI", 9, "bold"),
+            ).grid(row=row_index, column=0, sticky="nsew", padx=(0, 4), pady=2)
+            for column_index, instrument in enumerate(DL_INSTRUMENTS, start=1):
+                self.dl_dashboard_cells[(line, instrument)] = self.create_dl_dashboard_cell(
+                    self.dl_dashboard_grid,
+                    row_index,
+                    column_index,
+                    line,
+                    instrument,
+                )
+
+        queue_panel = ttk.Frame(content, style="Panel.TFrame", padding=12)
+        queue_panel.grid(row=1, column=1, sticky="nsew", pady=(0, 10))
+        queue_panel.columnconfigure(0, weight=1)
+        queue_panel.rowconfigure(1, weight=1)
+        self.tr_label(queue_panel, "Trained Models", style="Subheader.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        self.dl_trained_tree = ttk.Treeview(
+            queue_panel,
+            columns=("time", "version", "change_type", "scope", "targets"),
+            show="headings",
+            selectmode="browse",
+            height=7,
+        )
+        trained_headings = {
+            "time": "Time",
+            "version": "Model Version",
+            "change_type": "Change Type",
+            "scope": "Scope",
+            "targets": "Target Machines",
+        }
+        trained_widths = {"time": 112, "version": 120, "change_type": 140, "scope": 100, "targets": 220}
+        for column in trained_headings:
+            self.dl_trained_tree.heading(column, text=self.text(trained_headings[column]))
+            self.dl_trained_tree.column(column, width=trained_widths[column], minwidth=80, stretch=False, anchor="w")
+        self.dl_trained_tree.grid(row=1, column=0, sticky="nsew")
+        trained_scroll = ttk.Scrollbar(queue_panel, orient="vertical", command=self.dl_trained_tree.yview)
+        trained_scroll.grid(row=1, column=1, sticky="ns")
+        self.dl_trained_tree.configure(yscrollcommand=trained_scroll.set)
+        self.dl_trained_tree.bind("<<TreeviewSelect>>", lambda _event: self.load_selected_dl_trained_model())
+
+        forms = ttk.Frame(content)
+        forms.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        forms.columnconfigure(0, weight=1)
+        forms.columnconfigure(1, weight=1)
+        self.build_dl_register_form(forms)
+        self.build_dl_apply_form(forms)
+        self.refresh_deep_learning_models()
+
+    def create_dl_dashboard_cell(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        column: int,
+        line: str,
+        instrument: str,
+    ) -> dict[str, tk.Widget]:
+        shell = tk.Frame(parent, bg="#d8dee8", padx=1, pady=1)
+        shell.grid(row=row, column=column, sticky="nsew", padx=2, pady=2)
+        cell = tk.Frame(shell, bg="#ffffff", padx=7, pady=5)
+        cell.pack(fill="both", expand=True)
+        version_label = tk.Label(cell, text="-", bg="#ffffff", fg="#111827", font=("Segoe UI", 9, "bold"), anchor="w")
+        version_label.pack(fill="x")
+        time_label = tk.Label(cell, text="", bg="#ffffff", fg="#4b5563", font=("Segoe UI", 8), anchor="w")
+        time_label.pack(fill="x", pady=(1, 0))
+        scope_label = tk.Label(cell, text="", bg="#ffffff", fg="#2563eb", font=("Segoe UI", 8), anchor="w")
+        scope_label.pack(fill="x", pady=(1, 0))
+        widgets: dict[str, tk.Widget] = {
+            "shell": shell,
+            "cell": cell,
+            "version_label": version_label,
+            "time_label": time_label,
+            "scope_label": scope_label,
+        }
+        for widget in widgets.values():
+            widget.bind("<Button-1>", lambda _event, target=f"{line} {instrument}": self.toggle_dl_apply_target(target))
+        return widgets
+
+    def build_dl_register_form(self, parent: ttk.Frame) -> None:
+        panel = ttk.Frame(parent, style="Panel.TFrame", padding=12)
+        panel.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        panel.columnconfigure(1, weight=1)
+        self.dl_register_version_var = tk.StringVar()
+        self.dl_register_change_var = tk.StringVar(value=DL_CHANGE_TYPES[-1])
+        self.dl_register_time_var = tk.StringVar(value=now_text())
+        self.dl_register_issue_var = tk.BooleanVar(value=True)
+        self.dl_register_targets: set[str] = set()
+        self.dl_register_target_buttons: dict[str, tk.Button] = {}
+
+        self.tr_label(panel, "Register Trained Model", style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.add_dl_target_selector(panel, 1, self.dl_register_targets, self.dl_register_target_buttons, self.toggle_dl_register_target)
+        self.add_labeled_entry(panel, "Model Version", self.dl_register_version_var, 2, 0)
+        self.add_labeled_combo(panel, "Change Type", self.dl_register_change_var, DL_CHANGE_TYPES, 3, 0)
+        self.add_labeled_entry(panel, "Trained Time", self.dl_register_time_var, 4, 0)
+        self.add_labeled_combo(panel, "Logged By", self.current_worker_var, WORKERS, 5, 0)
+        self.dl_register_issue_button = tk.Button(panel, anchor="w", relief="raised", command=self.toggle_dl_register_issue_option)
+        self.dl_register_issue_button.grid(row=6, column=0, columnspan=2, sticky="w", pady=7)
+        self.refresh_dl_register_issue_button()
+        self.tr_label(panel, "Description", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self.dl_register_description_text = tk.Text(panel, height=4, wrap="word", font=("Segoe UI", 9))
+        self.dl_register_description_text.grid(row=8, column=0, columnspan=2, sticky="nsew")
+        actions = ttk.Frame(panel, style="Panel.TFrame")
+        actions.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.tr_button(actions, "Clear Targets", lambda: self.set_dl_register_targets(set())).pack(side="left")
+        self.tr_button(actions, "Save Trained Model", self.save_dl_trained_model, prefix="✓ ", style="Accent.TButton").pack(side="right")
+        self.refresh_dl_target_buttons(self.dl_register_target_buttons, self.dl_register_targets)
+
+    def build_dl_apply_form(self, parent: ttk.Frame) -> None:
+        panel = ttk.Frame(parent, style="Panel.TFrame", padding=12)
+        panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        panel.columnconfigure(1, weight=1)
+        self.dl_apply_version_var = tk.StringVar()
+        self.dl_apply_change_var = tk.StringVar(value=DL_CHANGE_TYPES[-1])
+        self.dl_apply_time_var = tk.StringVar(value=now_text())
+        self.dl_apply_issue_var = tk.BooleanVar(value=True)
+        self.dl_apply_targets: set[str] = set()
+        self.dl_apply_target_buttons: dict[str, tk.Button] = {}
+        self.dl_selected_trained_id: int | None = None
+
+        self.tr_label(panel, "Apply Model", style="Subheader.TLabel").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        self.add_dl_target_selector(panel, 1, self.dl_apply_targets, self.dl_apply_target_buttons, self.toggle_dl_apply_target)
+        self.add_labeled_entry(panel, "Model Version", self.dl_apply_version_var, 2, 0)
+        self.add_labeled_combo(panel, "Change Type", self.dl_apply_change_var, DL_CHANGE_TYPES, 3, 0)
+        self.add_labeled_entry(panel, "Applied Time", self.dl_apply_time_var, 4, 0)
+        self.add_labeled_combo(panel, "Logged By", self.current_worker_var, WORKERS, 5, 0)
+        self.dl_apply_issue_button = tk.Button(panel, anchor="w", relief="raised", command=self.toggle_dl_apply_issue_option)
+        self.dl_apply_issue_button.grid(row=6, column=0, columnspan=2, sticky="w", pady=7)
+        self.refresh_dl_apply_issue_button()
+        self.tr_label(panel, "Description", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self.dl_apply_description_text = tk.Text(panel, height=4, wrap="word", font=("Segoe UI", 9))
+        self.dl_apply_description_text.grid(row=8, column=0, columnspan=2, sticky="nsew")
+        actions = ttk.Frame(panel, style="Panel.TFrame")
+        actions.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.tr_button(actions, "Clear Targets", lambda: self.set_dl_apply_targets(set())).pack(side="left")
+        self.tr_button(actions, "Save Applied Model", self.save_dl_model_application, prefix="✓ ", style="Accent.TButton").pack(side="right")
+        self.refresh_dl_target_buttons(self.dl_apply_target_buttons, self.dl_apply_targets)
+
+    def add_dl_target_selector(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        selected_targets: set[str],
+        button_map: dict[str, tk.Button],
+        toggle_command,
+    ) -> None:
+        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        self.tr_label(frame, "Target Machines", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 3))
+        shortcuts = ttk.Frame(frame, style="Panel.TFrame")
+        shortcuts.grid(row=0, column=1, sticky="e")
+        self.tr_button(shortcuts, "Select All", lambda: self.set_dl_targets(selected_targets, button_map, set(DL_MACHINE_KEYS))).pack(side="left", padx=(0, 4))
+        self.tr_button(shortcuts, "Clear Targets", lambda: self.set_dl_targets(selected_targets, button_map, set())).pack(side="left")
+        grid = ttk.Frame(frame, style="Panel.TFrame")
+        grid.grid(row=1, column=0, columnspan=2, sticky="ew")
+        for index, target in enumerate(DL_MACHINE_TARGETS):
+            key = target["key"]
+            button = tk.Button(
+                grid,
+                text=key,
+                width=16,
+                relief="raised",
+                command=lambda selected_target=key: toggle_command(selected_target),
+            )
+            button.grid(row=index // 4, column=index % 4, sticky="ew", padx=2, pady=3)
+            grid.columnconfigure(index % 4, weight=1)
+            button_map[key] = button
+
+    def set_dl_targets(self, selected_targets: set[str], button_map: dict[str, tk.Button], targets: set[str]) -> None:
+        selected_targets.clear()
+        selected_targets.update(targets)
+        self.refresh_dl_target_buttons(button_map, selected_targets)
+
+    def set_dl_register_targets(self, targets: set[str]) -> None:
+        self.set_dl_targets(self.dl_register_targets, self.dl_register_target_buttons, targets)
+
+    def set_dl_apply_targets(self, targets: set[str]) -> None:
+        self.set_dl_targets(self.dl_apply_targets, self.dl_apply_target_buttons, targets)
+
+    def toggle_dl_register_target(self, target: str) -> None:
+        if target in self.dl_register_targets:
+            self.dl_register_targets.remove(target)
+        else:
+            self.dl_register_targets.add(target)
+        self.refresh_dl_target_buttons(self.dl_register_target_buttons, self.dl_register_targets)
+
+    def toggle_dl_apply_target(self, target: str) -> None:
+        if target in self.dl_apply_targets:
+            self.dl_apply_targets.remove(target)
+        else:
+            self.dl_apply_targets.add(target)
+        self.refresh_dl_target_buttons(self.dl_apply_target_buttons, self.dl_apply_targets)
+
+    def refresh_dl_target_buttons(self, button_map: dict[str, tk.Button], selected_targets: set[str]) -> None:
+        selected_bg = "#1f6feb"
+        selected_fg = "#ffffff"
+        default_bg = self.cget("bg")
+        default_fg = "#111827"
+        for target, button in button_map.items():
+            is_selected = target in selected_targets
+            button.configure(
+                background=selected_bg if is_selected else default_bg,
+                foreground=selected_fg if is_selected else default_fg,
+                relief="sunken" if is_selected else "raised",
+            )
+
+    def toggle_dl_register_issue_option(self) -> None:
+        self.dl_register_issue_var.set(not self.dl_register_issue_var.get())
+        self.refresh_dl_register_issue_button()
+
+    def refresh_dl_register_issue_button(self) -> None:
+        marker = "☑" if self.dl_register_issue_var.get() else "☐"
+        self.dl_register_issue_button.configure(text=f"{marker} {self.text('Create Action Issue')}")
+
+    def toggle_dl_apply_issue_option(self) -> None:
+        self.dl_apply_issue_var.set(not self.dl_apply_issue_var.get())
+        self.refresh_dl_apply_issue_button()
+
+    def refresh_dl_apply_issue_button(self) -> None:
+        marker = "☑" if self.dl_apply_issue_var.get() else "☐"
+        self.dl_apply_issue_button.configure(text=f"{marker} {self.text('Create Monitoring Issue')}")
+
+    def save_dl_trained_model(self) -> None:
+        try:
+            create_dl_trained_model(
+                DeepLearningTrainedInput(
+                    trained_time=self.dl_register_time_var.get().strip(),
+                    model_family=self.dl_model_family_var.get().strip(),
+                    model_version=self.dl_register_version_var.get().strip(),
+                    change_type=self.dl_register_change_var.get().strip(),
+                    target_machines=tuple(self.dl_register_targets),
+                    worker=self.current_worker_var.get().strip(),
+                    description=self.dl_register_description_text.get("1.0", "end").strip(),
+                ),
+                self.dl_register_issue_var.get(),
+            )
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self.refresh_deep_learning_models()
+        self.refresh_open_issues()
+        self.search_records()
+        messagebox.showinfo(APP_TITLE, "Trained model saved.")
+
+    def save_dl_model_application(self) -> None:
+        try:
+            create_dl_model_application(
+                DeepLearningApplicationInput(
+                    applied_time=self.dl_apply_time_var.get().strip(),
+                    model_family=self.dl_model_family_var.get().strip(),
+                    model_version=self.dl_apply_version_var.get().strip(),
+                    change_type=self.dl_apply_change_var.get().strip(),
+                    target_machines=tuple(self.dl_apply_targets),
+                    worker=self.current_worker_var.get().strip(),
+                    description=self.dl_apply_description_text.get("1.0", "end").strip(),
+                ),
+                self.dl_apply_issue_var.get(),
+                self.dl_selected_trained_id,
+            )
+        except ValueError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        self.dl_selected_trained_id = None
+        self.refresh_deep_learning_models()
+        self.refresh_open_issues()
+        self.search_records()
+        messagebox.showinfo(APP_TITLE, "Applied model saved.")
+
+    def refresh_deep_learning_models(self) -> None:
+        if not hasattr(self, "dl_model_family_var"):
+            return
+        self.populate_dl_dashboard()
+        self.populate_dl_trained_queue()
+
+    def populate_dl_dashboard(self) -> None:
+        family = self.dl_model_family_var.get()
+        latest = latest_dl_applied_models(family)
+        for target in DL_MACHINE_TARGETS:
+            line = target["line"]
+            instrument = target["instrument"]
+            row = latest.get((family, line, instrument))
+            widgets = self.dl_dashboard_cells[(line, instrument)]
+            if row is None:
+                widgets["cell"].configure(bg="#ffffff")
+                widgets["version_label"].configure(text="-", bg="#ffffff", fg="#6b7280")
+                widgets["time_label"].configure(text="", bg="#ffffff")
+                widgets["scope_label"].configure(text="", bg="#ffffff")
+                continue
+            widgets["cell"].configure(bg="#ffffff")
+            widgets["version_label"].configure(text=row["model_version"], bg="#ffffff", fg="#111827")
+            widgets["time_label"].configure(text=row["applied_time"], bg="#ffffff")
+            widgets["scope_label"].configure(text=row["scope"], bg="#ffffff")
+
+    def populate_dl_trained_queue(self) -> None:
+        family = self.dl_model_family_var.get()
+        self.dl_trained_rows = {
+            int(row["id"]): row
+            for row in list_dl_trained_models(family, "Action Required")
+        }
+        for item in self.dl_trained_tree.get_children():
+            self.dl_trained_tree.delete(item)
+        for row in self.dl_trained_rows.values():
+            self.dl_trained_tree.insert(
+                "",
+                "end",
+                iid=str(row["id"]),
+                values=(
+                    row["trained_time"],
+                    row["model_version"],
+                    row["change_type"],
+                    row["scope"],
+                    row["target_machines"],
+                ),
+            )
+
+    def load_selected_dl_trained_model(self) -> None:
+        selection = self.dl_trained_tree.selection()
+        if not selection:
+            return
+        row = self.dl_trained_rows.get(int(selection[0]))
+        if not row:
+            return
+        self.dl_selected_trained_id = int(row["id"])
+        self.dl_model_family_var.set(row["model_family"])
+        self.dl_apply_version_var.set(row["model_version"])
+        self.dl_apply_change_var.set(row["change_type"])
+        self.dl_apply_time_var.set(now_text())
+        self.set_dl_apply_targets(set(split_dl_targets(row["target_machines"])))
+        self.dl_apply_description_text.delete("1.0", "end")
+        self.dl_apply_description_text.insert("1.0", row["description"] or "")
+        self.populate_dl_dashboard()
+
+    def export_deep_learning_dashboard(self) -> None:
+        default_name = f"deep_learning_model_dashboard_{now_text().replace(':', '').replace(' ', '_')}.xlsx"
+        output = filedialog.asksaveasfilename(
+            title="Save Deep Learning Dashboard",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel Workbook", "*.xlsx")],
+        )
+        if not output:
+            return
+        export_deep_learning_dashboard_to_excel(Path(output))
+        messagebox.showinfo(APP_TITLE, f"Deep learning dashboard saved:\n{output}")
 
     def make_issue_tree(self, parent: ttk.Frame) -> ttk.Treeview:
         columns = ("id", "issue_time", "line", "instrument", "category", "subcategory", "title", "status", "worker")

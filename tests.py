@@ -4,9 +4,14 @@ from tempfile import TemporaryDirectory
 from openpyxl import load_workbook
 
 from vision_tracker import (
+    DL_MACHINE_KEYS,
     IssueInput,
     VersionInput,
+    DeepLearningApplicationInput,
+    DeepLearningTrainedInput,
     active_issues,
+    create_dl_model_application,
+    create_dl_trained_model,
     create_version_update,
     create_issue,
     create_issues_for_lines,
@@ -15,12 +20,15 @@ from vision_tracker import (
     delete_issue,
     delete_version_template,
     export_issues_to_excel,
+    export_deep_learning_dashboard_to_excel,
     export_version_dashboard_to_excel,
     get_version_template,
     initialize_database,
     issue_time_bounds,
     latest_dashboard_versions,
+    latest_dl_applied_models,
     latest_version_by_instrument,
+    list_dl_trained_models,
     recent_version_templates,
     resolve_issue,
     save_version_component_template,
@@ -301,6 +309,66 @@ def run_tests() -> None:
         assert any(row["id"] == multi_id for row in minus_rows)
         multi_filter_rows = search_issues({"instrument": "Lead / Welding(-)"}, db_path)
         assert any(row["id"] == multi_id for row in multi_filter_rows)
+
+        dl_targets = tuple(DL_MACHINE_KEYS[:2])
+        trained_id = create_dl_trained_model(
+            DeepLearningTrainedInput(
+                trained_time="2026-06-17 13:30",
+                model_family="SEPA",
+                model_version="SEPA-2026-06-A",
+                change_type="Overkill Training",
+                target_machines=dl_targets,
+                worker="Seongwon Park",
+                description="Added overkill training images for welding inspection.",
+            ),
+            True,
+            db_path,
+        )
+        trained_rows = list_dl_trained_models("SEPA", "Action Required", db_path)
+        assert len(trained_rows) == 1
+        assert trained_rows[0]["id"] == trained_id
+        assert trained_rows[0]["scope"] == "Line-specific"
+        dl_action_issues = search_issues({"category": "Deep Learning", "subcategory": "Model Update"}, db_path)
+        assert len(dl_action_issues) == 1
+        assert dl_action_issues[0]["status"] == "Action Required"
+        assert dl_action_issues[0]["line"] == "1-1"
+
+        application_ids = create_dl_model_application(
+            DeepLearningApplicationInput(
+                applied_time="2026-06-17 14:30",
+                model_family="SEPA",
+                model_version="SEPA-2026-06-A",
+                change_type="Model Update",
+                target_machines=dl_targets,
+                worker="Seongwon Park",
+                description="Applied trained SEPA model to both 1-1 welding polarities.",
+            ),
+            True,
+            trained_id,
+            db_path,
+        )
+        assert len(application_ids) == 2
+        latest_dl = latest_dl_applied_models("SEPA", db_path)
+        assert latest_dl[("SEPA", "1-1", "Welding(-)")]["model_version"] == "SEPA-2026-06-A"
+        assert latest_dl[("SEPA", "1-1", "Welding(+)")]["model_version"] == "SEPA-2026-06-A"
+        assert list_dl_trained_models("SEPA", "Action Required", db_path) == []
+        assert list_dl_trained_models("SEPA", "Applied", db_path)[0]["id"] == trained_id
+        dl_issues = search_issues({"category": "Deep Learning", "subcategory": "Model Update"}, db_path)
+        assert {row["status"] for row in dl_issues} == {"Action Required", "Monitoring"}
+
+        dl_export_path = Path(temp_dir) / "deep_learning_dashboard.xlsx"
+        export_deep_learning_dashboard_to_excel(dl_export_path, db_path)
+        dl_workbook = load_workbook(dl_export_path)
+        assert dl_workbook.sheetnames == ["Applied Models", "Trained Models"]
+        applied_sheet = dl_workbook["Applied Models"]
+        trained_sheet = dl_workbook["Trained Models"]
+        assert applied_sheet.max_row == 1 + 10 * 8
+        assert trained_sheet.max_row == 2
+        applied_rows = list(applied_sheet.iter_rows(min_row=2, values_only=True))
+        sepa_minus = [row for row in applied_rows if row[0] == "SEPA" and row[1] == "1-1" and row[3] == "Welding(-)"][0]
+        assert sepa_minus[4] == "SEPA-2026-06-A"
+        assert applied_sheet["I2"].alignment.wrap_text is True
+        assert trained_sheet["I2"].alignment.wrap_text is True
 
         create_version_update(
             VersionInput(
